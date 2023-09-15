@@ -1,0 +1,11 @@
+{
+	"id": "obsidian-vscode-editor",
+	"name": "VSCode Editor",
+	"version": "1.0.0",
+	"minAppVersion": "0.15.0",
+	"description": "Edit Code Files like VSCode.",
+	"author": "sunxvming",
+	"authorUrl": "https://github.com/sunxvming",
+	"fundingUrl": "https://sunxvming.com",
+	"isDesktopOnly": true
+}
