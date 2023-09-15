@@ -6,6 +6,8 @@ export interface MyPluginSettings {
 	minimap: boolean;
 	semanticValidation: boolean;
 	syntaxValidation: boolean;
+	themeColor: string;
+	fontSize: number;
 }
 
 export const DEFAULT_SETTINGS: MyPluginSettings = {
@@ -15,6 +17,8 @@ export const DEFAULT_SETTINGS: MyPluginSettings = {
 	minimap: true,
 	semanticValidation: true,
 	syntaxValidation: true,
+	themeColor: "AUTO",
+	fontSize: 16,
 }
 
 

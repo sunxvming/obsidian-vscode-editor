@@ -1,36 +1,72 @@
 // https://github.com/microsoft/monaco-editor/issues/1288
 
-import {TextFileView, TFile, WorkspaceLeaf} from "obsidian";
-import {viewType} from "./common";
+import { TextFileView, TFile, WorkspaceLeaf } from "obsidian";
+import { viewType } from "./common";
 import CodeFilesPlugin from "./main";
 import * as monaco from 'monaco-editor'
-import  'monaco-editor/esm/vs/editor/editor.all.js'; // 导入 Monaco Editor 核心文件
-// import  'monaco-editor/esm/vs/editor/editor.main.css'; // 导入 Monaco Editor
+import { isObsidianThemeDark } from "./ObsidianUtils";
 
 
 export class CodeEditorView extends TextFileView {
-	static i = 0;
-	id = CodeEditorView.i++;
+
 	value = "";
 	monacoEditor: monaco.editor.IStandaloneCodeEditor;
 
 
 	constructor(leaf: WorkspaceLeaf, private plugin: CodeFilesPlugin) {
 		super(leaf);
-		this.monacoEditor = monaco.editor.create(this.contentEl, {
-			value: '',
-			language: 'cpp', // 设置编辑器语言
-			automaticLayout: true,
-			theme: 'vs-dark', // 设置编辑器主题，可以根据需要选择
-		});
-	
-		this.monacoEditor.onDidChangeModelContent(() => {
-		this.requestSave();
-		});		
+		console.log("CodeEditorView do constructor===");
 	}
 
-	getDisplayText(): string {
-		return this.file?.name;
+	async onOpen() {
+		console.log("CodeEditorView do onOpen===");
+		await super.onOpen();
+	}
+
+	async onLoadFile(file: TFile) {
+		console.log("CodeEditorView do onLoadFile===");
+		console.log("onLoadFile is:", file.basename);
+
+		const minmap: monaco.editor.IEditorMinimapOptions = {
+			enabled: this.plugin.settings.minimap,
+		}
+
+		this.monacoEditor = monaco.editor.create(this.contentEl, {
+			automaticLayout: true,
+			language: this.getLanguage(),
+			theme: this.getThemeColor(),
+			lineNumbers: this.plugin.settings.lineNumbers ? "on" : "off",
+			minimap: minmap,
+			folding: this.plugin.settings.folding,
+			fontSize: this.plugin.settings.fontSize,
+			scrollBeyondLastLine : false,
+		});
+
+		this.monacoEditor.onDidChangeModelContent(() => {
+			this.requestSave();
+		});		
+
+		// const model = this.monacoEditor.getModel();
+		// monaco.editor.setModelLanguage(model, this.getLanguage());
+		await super.onLoadFile(file);
+	}
+	
+	async onUnloadFile(file: TFile) {
+		await super.onUnloadFile(file);
+		this.monacoEditor.dispose();
+
+		console.log("CodeEditorView do onUnloadFile===");
+	}
+
+	async onClose() {		
+		await super.onClose();
+		console.log("CodeEditorView do onClose===");
+		this.monacoEditor.dispose();
+		console.log("onClose end" );
+	}
+
+	onResize() {
+		this.monacoEditor.layout();
 	}
 
 	getViewType(): string {
@@ -41,20 +77,15 @@ export class CodeEditorView extends TextFileView {
 		return file?.path ?? this.file?.path;
 	}
 
-	async onClose() {
-		await super.onClose();
-		// console.log("!!onClose", this.file?.name, this.id);
-	}
 
-	onResize() {
-		this.monacoEditor.layout();
-	}
 
 	getViewData = () => {
 		return this.monacoEditor.getValue();
 	}
 
 	setViewData = (data: string, clear: boolean) => {
+		console.log("CodeEditorView do setViewData===");
+
 		if (clear) {
 			this.monacoEditor.getModel()?.setValue(data);
 		} else {
@@ -65,21 +96,23 @@ export class CodeEditorView extends TextFileView {
 		this.monacoEditor.setValue('');
 	}
 
-	async onUnloadFile(file: TFile) {
-		await super.onUnloadFile(file);
-		// console.log("!!onUnloadFile", this.id, file.name)
 
+	getThemeColor(): string {
+		const themeColor = this.plugin.settings.themeColor;
+		let theme: string = "vs";
+		if (themeColor === "AUTO") {
+			theme = isObsidianThemeDark() === true ? "vs-dark" : "vs";
+		} else if (themeColor === "DARK") {
+			theme = "vs-dark";
+		} else if (themeColor === "LIGHT") {
+			theme = "vs";
+		}
+		return theme;
 	}
-
-	async onOpen() {
-		await super.onOpen();
-		// console.log("!!onOpen", this.id, this.file?.name)
-	}
-
-
 
 
 	getLanguage() {
+		console.log("file extension:", this.file?.extension);
 		switch (this.file?.extension) {
 			case "js":
 			case "es6":

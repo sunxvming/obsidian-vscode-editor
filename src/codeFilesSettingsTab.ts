@@ -1,5 +1,11 @@
-import {App, PluginSettingTab, Setting} from "obsidian";
+import { App, PluginSettingTab, Setting } from "obsidian";
 import CodeFilesPlugin from "./main";
+import { t } from 'src/lang/helpers';
+
+
+import {
+	THEME_COLOR
+} from "./constants";
 
 export class CodeFilesSettingsTab extends PluginSettingTab {
 	plugin: CodeFilesPlugin;
@@ -10,12 +16,46 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 	}
 
 	display(): void {
-		const {containerEl} = this;
+		const { containerEl } = this;
 
 		containerEl.empty();
 
-		containerEl.createEl('h2', {text: 'Code Files Settings'});
+		containerEl.createEl('h2', { text: 'Code Editor Settings' });
 
+
+		new Setting(containerEl)
+			.setName("基础颜色")
+			.setDesc('为代码编辑器选择一个基础颜色，基础颜色默认跟随obsidian的基础颜色。')
+			.addDropdown(async (dropdown) => {
+				for (const key in THEME_COLOR) {
+					// @ts-ignore
+					dropdown.addOption(key, t(key));
+				}
+				dropdown.setValue(this.plugin.settings.themeColor);
+				dropdown.onChange(async (option) => {
+					this.plugin.settings.themeColor = option;
+					await this.plugin.saveSettings();
+				});
+			});
+
+		let fontSizeText: HTMLDivElement;
+		new Setting(containerEl)
+			.setName('字体大小')
+			.setDesc('字体大小desc')
+			.addSlider(slider => slider
+				.setLimits(5, 30, 1)
+				.setValue(this.plugin.settings.fontSize)
+				.onChange(async (value) => {
+					fontSizeText.innerText = " " + value.toString();
+					this.plugin.settings.fontSize = value;
+					this.plugin.saveSettings();
+				}))
+			.settingEl.createDiv('', (el) => {
+				fontSizeText = el;
+				el.style.minWidth = "2.3em";
+				el.style.textAlign = "right";
+				el.innerText = " " + this.plugin.settings.fontSize.toString();
+			});
 
 		new Setting(containerEl)
 			.setName('File Extensions')
@@ -60,24 +100,5 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
-		new Setting(containerEl)
-			.setName('Semantic Validation')
-			.setDesc('Editor will show semantic validation errors.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.semanticValidation)
-				.onChange(async (value) => {
-					this.plugin.settings.semanticValidation = value;
-					await this.plugin.saveSettings();
-				}));
-
-		new Setting(containerEl)
-			.setName('Syntax Validation')
-			.setDesc('Editor will show syntax validation errors.')
-			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.syntaxValidation)
-				.onChange(async (value) => {
-					this.plugin.settings.syntaxValidation = value;
-					await this.plugin.saveSettings();
-				}));
 	}
 }

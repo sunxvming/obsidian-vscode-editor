@@ -10,7 +10,6 @@ export default class CodeFilesPlugin extends Plugin {
 	async onload() {
 		await this.loadSettings();
 
-
 		this.registerView(viewType, leaf => new CodeEditorView(leaf, this));
 		this.registerExtensions(this.settings.extensions, viewType);
 
