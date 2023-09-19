@@ -20,12 +20,12 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		containerEl.createEl('h2', { text: 'Code Editor Settings' });
+		containerEl.createEl('h2', { text: t('CODE_SETTING') });
 
 
 		new Setting(containerEl)
-			.setName("基础颜色")
-			.setDesc('为代码编辑器选择一个基础颜色，基础颜色默认跟随obsidian的基础颜色。')
+			.setName(t("BASE_COLOR"))  
+			.setDesc(t('BASE_COLOR_DESC'))
 			.addDropdown(async (dropdown) => {
 				for (const key in THEME_COLOR) {
 					// @ts-ignore
@@ -40,8 +40,8 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 
 		let fontSizeText: HTMLDivElement;
 		new Setting(containerEl)
-			.setName('字体大小')
-			.setDesc('字体大小desc')
+			.setName(t('FONT_SIZE'))
+			.setDesc(t('FONT_SIZE_DESC'))
 			.addSlider(slider => slider
 				.setLimits(5, 30, 1)
 				.setValue(this.plugin.settings.fontSize)
@@ -58,10 +58,8 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
-			.setName('File Extensions')
-			.setDesc('Files with these extensions will show up in the sidebar, and will ' +
-				'be available to create new files from. Seperated by commas. ' +
-				'Changes to the file extensions need a restart to take effect.')
+			.setName(t('FILE_EXTENSIONS'))
+			.setDesc(t('FILE_EXTENSIONS_DESC'))
 			.addText(text => text
 				.setPlaceholder('js,ts')
 				.setValue(this.plugin.settings.extensions.join(","))
@@ -71,8 +69,8 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Folding')
-			.setDesc('Editor will support code block folding.')
+			.setName(t('FOLDING'))
+			.setDesc(t('FOLDING_DESC'))
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.folding)
 				.onChange(async (value) => {
@@ -81,8 +79,8 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Line Numbers')
-			.setDesc('Editor will show line numbers.')
+			.setName(t('LINE_NUMBERS'))
+			.setDesc(t('LINE_NUMBERS_DESC'))
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.lineNumbers)
 				.onChange(async (value) => {
@@ -91,8 +89,8 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 				}));
 
 		new Setting(containerEl)
-			.setName('Minimap')
-			.setDesc('Editor will show a minimap.')
+			.setName(t('MINIMAP'))
+			.setDesc(t('MINIMAP_DESC'))
 			.addToggle(toggle => toggle
 				.setValue(this.plugin.settings.minimap)
 				.onChange(async (value) => {
