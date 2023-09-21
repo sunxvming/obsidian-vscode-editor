@@ -1,12 +1,12 @@
-<h1 align="center">Obsidian Image Toolkit</h1>
+<h1 align="center">Obsidian VSCode Editor</h1>
 
 <p align="center">
-    <img alt="Release version" src="https://img.shields.io/github/v/release/sissilab/obsidian-image-toolkit?style=for-the-badge">
-    <img alt="Download count" src="https://img.shields.io/github/downloads/sissilab/obsidian-image-toolkit/total?style=for-the-badge">
+    <img alt="Release version" src="https://img.shields.io/github/v/release/sunxvming/obsidian-vscode-editor?style=for-the-badge">
+    <img alt="Download count" src="https://img.shields.io/github/downloads/sunxvming/obsidian-vscode-editor/total?style=for-the-badge">
 </p>
 
 <p align="center">
-    <span>Obsidian VSCode Editor 是一款 Obsidian 的第三方插件，它提供对各种代码格式文件的查看和编辑功能。</span>
+    <span>一款 Obsidian 的第三方插件，提供对各种代码格式文件的查看和编辑功能。</span>
     <br/>
     <a href="/README_cn.md">简体中文</a>
     ·
@@ -15,20 +15,35 @@
 
 
 ## 关于插件
-Obsidian 默认不支持对各种代码文件的查看和编辑，而 Obsidian VSCode Editor 就是为了解决这个问题而生的。它基于 [Monaco Editor](https://microsoft.github.io/monaco-editor/)（VSCode 的编辑器内核）开发，支持对各种代码格式文件的查看和编辑，包括但不限于：`C`、`C++`、`C#`、`CSS`、`Go`、`HTML`、`Java`、`JavaScript`、`JSON`、`Python`、`Ruby`、`Rust`、`Shell`、`XML`、`YAML`、`ini` 等。
+Obsidian 默认不支持对各种代码文件的查看和编辑，而 Obsidian VSCode Editor 就是为了解决这个问题而生的。
+
+它基于 [Monaco Editor](https://microsoft.github.io/monaco-editor/)（VSCode 的编辑器内核）开发，支持对各种代码格式文件的查看和编辑，包括但不限于：`C`、`C++`、`C#`、`CSS`、`Go`、`HTML`、`Java`、`JavaScript`、`JSON`、`Python`、`Ruby`、`Rust`、`Shell`、`XML`、`YAML`、`ini` 等。
+
 你再也不用为了查看或编辑某个代码文件而打开另一个编辑器了，一切都在 Obsidian 中完成。
 
 ## 基本特性
 
 - 支持对各种代码格式文件的查看和编辑，就想你在本地用VSCode编辑代码一样
 - 支持对编辑器的主题颜色进行设置，包括浅色主题和深色主题
-- 支持对编辑器的字体大小进行设置，同时提供通过ctrl+鼠标滚轮来调整字体大小的快捷方式进行设置
+- 支持对编辑器的字体大小进行设置，同时提供通过`ctrl+鼠标滚轮`来调整字体大小的快捷方式进行设置
 - 支持对是否显示行号进行设置
 - 支持对是否显示缩进参考线进行设置
 - 支持对是否显示代码缩略图进行设置
 - 通快捷图标按钮或命令来创建新的代码文件
 
 ## 使用截图
+- **亮色主题**
+![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921184929.png)
+
+- **暗色主题**
+![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921184840.png)
+
+- **创建代码文件**
+![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921185107.png)
+
+- **编辑器设置面板**
+![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921190652.png)
+
 
 ## 安装
 
