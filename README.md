@@ -27,13 +27,13 @@ You no longer have to open another editor just to view or edit a certain code fi
 
 ## Basic features
 
-- Support for viewing and editing files in various code formats, just like you edit code locally with VSCode
-- Supports setting the editor's theme colors, including light themes and dark themes
-- Support to set the font size of the editor, and provide a shortcut to adjust the font size by `ctrl+ mouse wheel`
-- You can set whether to display the line number
-- Supports setting whether to display indent guides
-- Supports setting whether to display code thumbnails
-- Shortcut icon buttons or commands to create new code files
+- Support for viewing and editing files in various code formats, just like editing code with VSCode.
+- Supports customization of the editor's theme colors, including light and dark themes.
+- Allows customization of the editor's font size, and provides a shortcut to adjust the font size using Ctrl + mouse wheel.
+- Provides the option to show/hide line numbers.
+- Offers the choice to display/hide indent guides.
+- Allows toggling the display of the code minimap.
+- Supports shortcut icon buttons or commands for creating new code files.
 
 ## Use screenshot
 
