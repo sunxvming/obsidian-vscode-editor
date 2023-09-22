@@ -11,7 +11,7 @@ export interface MyPluginSettings {
 }
 
 export const DEFAULT_SETTINGS: MyPluginSettings = {
-	extensions: ["ts", "js", "html", "py", "css","c", "cpp", "go","rs","java","json" ,"txt", "lua", "md", "php", "rb", "sh", "swift", "xml", "yaml"],
+	extensions: ["ts", "js", "html", "py", "css","c", "cpp", "go","rs","java","json" ,"txt", "lua", "php", "rb", "sh", "swift", "xml", "yaml"],
 	folding: true,
 	lineNumbers: true,
 	minimap: true,
