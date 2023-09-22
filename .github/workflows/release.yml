@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "*"
+env:
+  PLUGIN_NAME: obsidian-vscode-editor # Change this to the name of your plugin-id folder
 
 jobs:
   build:
@@ -25,7 +27,9 @@ jobs:
       - name: Zip plugin
         run: |
           tag="${GITHUB_REF#refs/tags/}"
-          zip obsidian-vscode-editor-"$tag".zip main.js manifest.json styles.css
+          mkdir ${{ env.PLUGIN_NAME }}
+          cp  main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
+          zip -r ${{ env.PLUGIN_NAME }}-"$tag".zip ${{ env.PLUGIN_NAME }}
 
       - name: Create release
         env:
