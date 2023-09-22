@@ -22,6 +22,11 @@ jobs:
           npm install
           npm run build
 
+      - name: Zip plugin
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          zip obsidian-vscode-editor-"$tag".zip main.js manifest.json styles.css
+
       - name: Create release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -31,4 +36,4 @@ jobs:
           gh release create "$tag" \
             --title="$tag" \
             --draft \
-            main.js manifest.json styles.css
+            main.js manifest.json styles.css obsidian-vscode-editor-"$tag".zip
