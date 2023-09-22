@@ -56,9 +56,10 @@ Obsidian 默认不支持对各种代码文件的查看和编辑，而 Obsidian V
 6. 一旦安装成功，先关闭当前社区插件窗口，然后在已安装插件列表下激活刚安装的插件
 
 **手动安装**:
-1. 下载 [latest release](https://github.com/sunxvming/obsidian-vscode-editor/releases/latest)
-2. 解压并提取 obsidian-vscode-editor 文件夹，然后放到你 Obsidian 库中的插件目录中 `<库>/.obsidian/plugins/` (注意: `.obsidian` 文件夹可能被隐藏了，你需要先将该文件夹展示出来)
-3. 打开设置 > 第三方插件，重新加载和激活该插件
+1. 进入最新版本的github下载页面 [latest release](https://github.com/sunxvming/obsidian-vscode-editor/releases/latest)
+2. 下载 `obsidian-vscode-editor-x.y.z.zip` 文件,其中 `x.y.z` 是版本号
+3. 解压并提取 obsidian-vscode-editor 文件夹，然后放到你 Obsidian 库中的插件目录中 `<库>/.obsidian/plugins/` (注意: `.obsidian` 文件夹可能被隐藏了，你需要先将该文件夹展示出来)
+4. 打开设置 > 第三方插件，重新加载和激活该插件
 
 ## 联系和反馈
 

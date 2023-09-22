@@ -62,9 +62,10 @@ You no longer have to open another editor just to view or edit a certain code fi
 6. Once installed, close the plugins browse window and go back community plugins window, and activate the newly installed plugin below installed plugins list
 
 **Manual installation**:
-1. Download the [latest release](https://github.com/sunxvming/obsidian-vscode-editor/releases/latest)
-2. Extract obsidian-image-toolkit folder from the zip to your vault's plugins folder `<vault>/.obsidian/plugins/` (Note: `.obsidian` folder may be hidden, you need to show it firstly)
-3. Open Settings > community plugins, and reload and activate the plugin below installed plugins list
+1. Enter the latest version of making download page [latest release](https://github.com/sunxvming/obsidian-vscode-editor/releases/latest)
+2. Download the `obsidian-vscode-editor-x.y.z.zip` file, where `x.y.z` is the version number
+3. Extract obsidian-image-toolkit folder from the zip to your vault's plugins folder `<vault>/.obsidian/plugins/` (Note: `.obsidian` folder may be hidden, you need to show it firstly)
+4. Open Settings > community plugins, and reload and activate the plugin below installed plugins list
 
 
 ## Contact
