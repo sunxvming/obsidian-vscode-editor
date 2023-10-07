@@ -15,17 +15,16 @@ export class CodeEditorView extends TextFileView {
 
 	constructor(leaf: WorkspaceLeaf, private plugin: CodeFilesPlugin) {
 		super(leaf);
-		console.log("CodeEditorView do constructor===");
 	}
 
+	/*
+	execute order: onOpen -> onLoadFile -> setViewData -> onUnloadFile -> onClose
+	*/
 	async onOpen() {
-		console.log("CodeEditorView do onOpen===");
 		await super.onOpen();
 	}
 
 	async onLoadFile(file: TFile) {
-		console.log("CodeEditorView do onLoadFile===");
-		console.log("onLoadFile is:", file.basename);
 
 		const minmap: monaco.editor.IEditorMinimapOptions = {
 			enabled: this.plugin.settings.minimap,
@@ -48,9 +47,6 @@ export class CodeEditorView extends TextFileView {
 
 		this.addCtrlKeyWheelEvents();
 
-
-
-
 		// const model = this.monacoEditor.getModel();
 		// monaco.editor.setModelLanguage(model, this.getLanguage());
 		await super.onLoadFile(file);
@@ -59,13 +55,10 @@ export class CodeEditorView extends TextFileView {
 	async onUnloadFile(file: TFile) {
 		await super.onUnloadFile(file);
 		this.monacoEditor.dispose();
-
-		console.log("CodeEditorView do onUnloadFile===");
 	}
 
 	async onClose() {
 		await super.onClose();
-		console.log("CodeEditorView do onClose===");
 	}
 
 	onResize() {
@@ -87,8 +80,6 @@ export class CodeEditorView extends TextFileView {
 	}
 
 	setViewData = (data: string, clear: boolean) => {
-		console.log("CodeEditorView do setViewData===");
-
 		if (clear) {
 			this.monacoEditor.getModel()?.setValue(data);
 		} else {

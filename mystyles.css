@@ -1,0 +1,13 @@
+.create-code-file-modal{
+    display: flex;
+    align-items : center;
+}
+
+.modal_input{
+    flex-grow: 1;
+    margin-right: 10px;
+}
+
+.modal_select{
+    margin-right: 10px;
+}

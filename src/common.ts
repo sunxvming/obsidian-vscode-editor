@@ -1,5 +1,5 @@
 
-export interface MyPluginSettings {
+export interface EditorSettings {
 	extensions: string[];
 	folding: boolean;
 	lineNumbers: boolean;
@@ -10,7 +10,7 @@ export interface MyPluginSettings {
 	fontSize: number;
 }
 
-export const DEFAULT_SETTINGS: MyPluginSettings = {
+export const DEFAULT_SETTINGS: EditorSettings = {
 	extensions: ["ts", "js", "html", "py", "css","c", "cpp", "go","rs","java","json" ,"txt", "lua", "php", "rb", "sh", "swift", "xml", "yaml"],
 	folding: true,
 	lineNumbers: true,

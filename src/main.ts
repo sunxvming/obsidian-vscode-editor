@@ -1,11 +1,11 @@
 import {Plugin} from "obsidian";
-import {DEFAULT_SETTINGS, MyPluginSettings} from "./common";
+import {DEFAULT_SETTINGS, EditorSettings} from "./common";
 import {CodeEditorView} from "./codeEditorView";
 import {CreateCodeFileModal} from "./createCodeFileModal";
 import {CodeFilesSettingsTab} from "./codeFilesSettingsTab";
 import {viewType} from "./common";
 export default class CodeFilesPlugin extends Plugin {
-	settings: MyPluginSettings;
+	settings: EditorSettings;
 
 	async onload() {
 		await this.loadSettings();
@@ -33,7 +33,7 @@ export default class CodeFilesPlugin extends Plugin {
 
 		this.addCommand({
 			id: 'create',
-			name: 'Create new Code File',
+			name: 'Create new code file',
 			callback: () => {
 				new CreateCodeFileModal(this).open();
 			}

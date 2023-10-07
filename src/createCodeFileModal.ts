@@ -12,7 +12,7 @@ import {
 import CodeFilesPlugin from "./main";
 
 export class CreateCodeFileModal extends Modal {
-	fileName = "My Code File";
+	fileName = "My code file";
 	fileExtension = this.plugin.settings.extensions[0];
 	parent: TAbstractFile;
 
@@ -23,11 +23,9 @@ export class CreateCodeFileModal extends Modal {
 
 	onOpen() {
 		const {contentEl} = this;
-		contentEl.style.display = "flex"
-		contentEl.style.alignItems = "center";
+		contentEl.addClass("create-code-file-modal");
 		const fileNameInput = new TextComponent(contentEl);
-		fileNameInput.inputEl.style.flexGrow = "1";
-		fileNameInput.inputEl.style.marginRight = "10px";
+		fileNameInput.inputEl.addClass("modal_input");
 		fileNameInput.setValue(this.fileName);
 		fileNameInput.inputEl.addEventListener("keypress", e => {
 			if (e.key === "Enter") {
@@ -37,7 +35,7 @@ export class CreateCodeFileModal extends Modal {
 		fileNameInput.onChange(value => this.fileName = value);
 
 		const fileExtensionInput = new DropdownComponent(contentEl);
-		fileExtensionInput.selectEl.style.marginRight = "10px";
+		fileExtensionInput.selectEl.addClass("modal_select");
 		fileExtensionInput.addOptions(this.plugin.settings.extensions.reduce((acc, ext) => {
 			acc[ext] = ext;
 			return acc;
