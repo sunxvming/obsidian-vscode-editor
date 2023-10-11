@@ -1,11 +1,11 @@
 {
 	"id": "vscode-editor",
 	"name": "VSCode Editor",
-	"version": "1.0.1",
+	"version": "1.0.2",
 	"minAppVersion": "0.15.0",
 	"description": "Edit Code Files like VSCode.",
 	"author": "sunxvming",
 	"authorUrl": "https://github.com/sunxvming",
 	"fundingUrl": "https://www.buymeacoffee.com/sunxvming",
-	"isDesktopOnly": true
+	"isDesktopOnly": false
 }
