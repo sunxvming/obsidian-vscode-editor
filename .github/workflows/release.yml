@@ -21,7 +21,8 @@ jobs:
 
       - name: Build plugin
         run: |
-          npm config set registry http://mirrors.cloud.tencent.com/npm/
+          npm config rm proxy 
+          npm config rm https-proxy 
           npm install
           npm run build
 
