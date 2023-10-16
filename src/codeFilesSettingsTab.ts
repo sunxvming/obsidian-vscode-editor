@@ -60,13 +60,12 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName(t('FILE_EXTENSIONS'))
 			.setDesc(t('FILE_EXTENSIONS_DESC'))
-			.addText(text => text
-				.setPlaceholder('js,ts')
+			.addTextArea(text => text
 				.setValue(this.plugin.settings.extensions.join(","))
 				.onChange(async (value) => {
 					this.plugin.settings.extensions = value.split(",");
 					await this.plugin.saveSettings();
-				}));
+				})).setClass("setting_ext");
 
 		new Setting(containerEl)
 			.setName(t('FOLDING'))

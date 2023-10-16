@@ -11,3 +11,7 @@
 .modal_select{
     margin-right: 10px;
 }
+
+.setting_ext textarea{
+    height: 6rem !important;
+}

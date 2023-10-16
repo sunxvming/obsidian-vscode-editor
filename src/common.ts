@@ -11,7 +11,7 @@ export interface EditorSettings {
 }
 
 export const DEFAULT_SETTINGS: EditorSettings = {
-	extensions: ["ts", "js", "html", "py", "css","c", "cpp", "go","rs","java","json" ,"txt", "lua", "php", "rb", "sh", "swift", "xml", "yaml"],
+	extensions: ["ts", "js", "html", "py", "css","c", "cpp", "go","rs","java","lua", "php"],
 	folding: true,
 	lineNumbers: true,
 	minimap: true,
@@ -22,4 +22,4 @@ export const DEFAULT_SETTINGS: EditorSettings = {
 }
 
 
-export const viewType = "code-editor";
+export const viewType = "vscode-editor";
