@@ -17,12 +17,10 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: "18.x"
+          node-version: 16
 
       - name: Build plugin
         run: |
-          npm config rm proxy 
-          npm config rm https-proxy 
           npm install
           npm run build
 
