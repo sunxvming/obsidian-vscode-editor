@@ -21,6 +21,7 @@ jobs:
 
       - name: Build plugin
         run: |
+          npm config set registry http://mirrors.cloud.tencent.com/npm/
           npm install
           npm run build
 
