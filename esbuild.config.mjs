@@ -17,29 +17,11 @@ let renamePlugin = {
 	setup(build) {
 		build.onEnd(result => {
 			// fs.renameSync('main.css', 'styles.css');
-			// console.log(`rename main.css to styles.css finished!`)
-
-			fs.readFile('mystyles.css', 'utf8', (err, mystyleData) => {
-				if (err) {
-					throw err;
-				}
-			
-				fs.readFile('main.css', 'utf8', (err, mainData) => {
-					if (err) {
-						throw err;
-					}
-			
-					const combinedData = mystyleData + '\n' + mainData;
-			
-					fs.writeFile('styles.css', combinedData, 'utf8', (err) => {
-						if (err) {
-							throw err;
-						}
-						console.log('styles.css create success.');
-					});
-				});
-			});
-
+			const mystyleData = fs.readFileSync('mystyles.css', 'utf8');
+			const mainData = fs.readFileSync('main.css', 'utf8');
+			const combinedData = mystyleData + '\n' + mainData;
+			fs.writeFileSync('styles.css', combinedData, 'utf8');
+			console.log('styles.css create success.');
 		})
 	},
 }

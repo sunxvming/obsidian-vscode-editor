@@ -1,4 +1,4 @@
-name: Release Obsidian plugin new
+name: Release Obsidian plugin
 
 on:
   push:
@@ -11,37 +11,33 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
-    strategy:
-      matrix:
-        node-version: [18.x]
-
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@v3
 
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
-      with:
-        node-version: ${{ matrix.node-version }}
+      - name: Use Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: "18.x"
 
-    - name: Build
-      run: |
-        npm install
-        npm run build
+      - name: Build plugin
+        run: |
+          npm install
+          npm run build
 
-    - name: Zip plugin
-      run: |
-        tag="${GITHUB_REF#refs/tags/}"
-        mkdir ${{ env.PLUGIN_NAME }}
-        cp  main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
-        zip -r ${{ env.PLUGIN_NAME }}-"$tag".zip ${{ env.PLUGIN_NAME }}
+      - name: Zip plugin
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
+          mkdir ${{ env.PLUGIN_NAME }}
+          cp  main.js manifest.json styles.css ${{ env.PLUGIN_NAME }}
+          zip -r ${{ env.PLUGIN_NAME }}-"$tag".zip ${{ env.PLUGIN_NAME }}
 
-    - name: Create release
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        tag="${GITHUB_REF#refs/tags/}"
+      - name: Create release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF#refs/tags/}"
 
-        gh release create "$tag" \
-          --title="$tag" \
-          --draft \
-          main.js manifest.json styles.css obsidian-vscode-editor-"$tag".zip
+          gh release create "$tag" \
+            --title="$tag" \
+            --draft \
+            main.js manifest.json styles.css obsidian-vscode-editor-"$tag".zip
