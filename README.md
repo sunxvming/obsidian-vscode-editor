@@ -26,7 +26,7 @@ You no longer have to open another editor just to view or edit a certain code fi
 
 
 ## Basic features
-
+- It **does not depend on** any third-party network services and can be used even when not connected to the internet.
 - Support for viewing and editing files in various code formats, just like editing code with VSCode.
 - Supports customization of the editor's theme colors, including light and dark themes.
 - Allows customization of the editor's font size, and provides a shortcut to adjust the font size using Ctrl + mouse wheel.
