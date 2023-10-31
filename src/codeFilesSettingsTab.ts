@@ -24,7 +24,7 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 
 
 		new Setting(containerEl)
-			.setName(t("BASE_COLOR"))  
+			.setName(t("BASE_COLOR"))
 			.setDesc(t('BASE_COLOR_DESC'))
 			.addDropdown(async (dropdown) => {
 				for (const key in THEME_COLOR) {
@@ -67,13 +67,24 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				})).setClass("setting_ext");
 
+
 		new Setting(containerEl)
-			.setName(t('FOLDING'))
-			.setDesc(t('FOLDING_DESC'))
+			.setName(t('WORDWRAP'))
+			.setDesc(t('WORDWRAP_DESC'))
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.folding)
+				.setValue(this.plugin.settings.wordWrap)
 				.onChange(async (value) => {
-					this.plugin.settings.folding = value;
+					this.plugin.settings.wordWrap = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName(t('MINIMAP'))
+			.setDesc(t('MINIMAP_DESC'))
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.minimap)
+				.onChange(async (value) => {
+					this.plugin.settings.minimap = value;
 					await this.plugin.saveSettings();
 				}));
 
@@ -87,15 +98,19 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+
 		new Setting(containerEl)
-			.setName(t('MINIMAP'))
-			.setDesc(t('MINIMAP_DESC'))
+			.setName(t('FOLDING'))
+			.setDesc(t('FOLDING_DESC'))
 			.addToggle(toggle => toggle
-				.setValue(this.plugin.settings.minimap)
+				.setValue(this.plugin.settings.folding)
 				.onChange(async (value) => {
-					this.plugin.settings.minimap = value;
+					this.plugin.settings.folding = value;
 					await this.plugin.saveSettings();
 				}));
+
+
+
 
 	}
 }

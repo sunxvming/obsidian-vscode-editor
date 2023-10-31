@@ -1,4 +1,3 @@
-// https://github.com/microsoft/monaco-editor/issues/1288
 
 import { TextFileView, TFile, WorkspaceLeaf } from "obsidian";
 import { viewType } from "./common";
@@ -35,10 +34,15 @@ export class CodeEditorView extends TextFileView {
 			language: getLanguage(this.file?.extension ?? ""),
 			theme: this.getThemeColor(),
 			lineNumbers: this.plugin.settings.lineNumbers ? "on" : "off",
+			wordWrap: this.plugin.settings.wordWrap ? "on" : "off",
 			minimap: minmap,
 			folding: this.plugin.settings.folding,
 			fontSize: this.plugin.settings.fontSize,
+			// Controls whether characters are highlighted that can be confused with basic ASCII characters
+			unicodeHighlight: { ambiguousCharacters: false },
 			scrollBeyondLastLine: false,
+			// 'semanticHighlighting.enabled': true,
+
 		});
 
 		this.monacoEditor.onDidChangeModelContent(() => {
@@ -46,6 +50,7 @@ export class CodeEditorView extends TextFileView {
 		});
 
 		this.addCtrlKeyWheelEvents();
+		this.addKeyEvents();
 
 		// const model = this.monacoEditor.getModel();
 		// monaco.editor.setModelLanguage(model, this.getLanguage());
@@ -53,6 +58,7 @@ export class CodeEditorView extends TextFileView {
 	}
 
 	async onUnloadFile(file: TFile) {
+		window.removeEventListener('keydown', this.keyHandle, true);
 		await super.onUnloadFile(file);
 		this.monacoEditor.dispose();
 	}
@@ -104,21 +110,62 @@ export class CodeEditorView extends TextFileView {
 		return theme;
 	}
 
+	private addKeyEvents = () => {
+		window.addEventListener('keydown', this.keyHandle, true);
+	}
 
 	private addCtrlKeyWheelEvents = () => {
-		this.containerEl.addEventListener('wheel', this.mousewheelHandle,  true);
+		this.containerEl.addEventListener('wheel', this.mousewheelHandle, true);
+
+	}
+
+	/*
+	修复不支持 `ctrl + 按键`快捷键的问题
+	原因是obsidian在app.js中增加了全局的keydown并且useCapture为true，猜测可能是为了支持快捷键就把阻止了子元素的事件的处理了
+	*/
+	private keyHandle = (event: KeyboardEvent) => {
+		console.log("keyHandle")
+		const ctrlMap = new Map<string, string>([
+			['f', 'actions.find'],
+			['h', 'editor.action.startFindReplaceAction'],
+			['/', 'editor.action.commentLine'],
+			['Enter', 'editor.action.insertLineAfter'],
+			['[', 'editor.action.outdentLines'],
+			[']', 'editor.action.indentLines'],
+			['d', 'editor.action.copyLinesDownAction'],
+		]);
+		console.log(event.key);
+		if (event.ctrlKey) {
+			const triggerName = ctrlMap.get(event.key);
+			if (triggerName) {
+				this.monacoEditor.trigger('', triggerName, null);
+			}
+		}
+
+
+		if (event.altKey) {
+			if (event.key === 'z') {
+				this.plugin.settings.wordWrap = !this.plugin.settings.wordWrap;
+				this.plugin.saveSettings();
+				this.monacoEditor.updateOptions({
+					wordWrap: this.plugin.settings.wordWrap ? "on" : "off",
+				})
+
+			}
+		}
 
 	}
 
 	private mousewheelHandle = (event: WheelEvent) => {
-		if(event.ctrlKey){
+		if (event.ctrlKey) {
 			let delta = 0 < event.deltaY ? 1 : -1;
 			this.plugin.settings.fontSize += delta;
 			this.plugin.saveSettings();
 			this.monacoEditor.updateOptions({
 				fontSize: this.plugin.settings.fontSize,
 			})
-			
+			// Stop event propagation, so that the editor doesn't scroll
+			// scroll is monaco-editor's default behavior
 			event.stopPropagation();
 		}
 	}
