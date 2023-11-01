@@ -3,7 +3,7 @@ import { TextFileView, TFile, WorkspaceLeaf } from "obsidian";
 import { viewType } from "./common";
 import CodeFilesPlugin from "./main";
 import * as monaco from 'monaco-editor'
-import { isObsidianThemeDark, getLanguage } from "./ObsidianUtils";
+import { getLanguage, getThemeColor, genEditorSettings } from "./ObsidianUtils";
 
 
 export class CodeEditorView extends TextFileView {
@@ -25,25 +25,8 @@ export class CodeEditorView extends TextFileView {
 
 	async onLoadFile(file: TFile) {
 
-		const minmap: monaco.editor.IEditorMinimapOptions = {
-			enabled: this.plugin.settings.minimap,
-		}
-
-		this.monacoEditor = monaco.editor.create(this.contentEl, {
-			automaticLayout: true,
-			language: getLanguage(this.file?.extension ?? ""),
-			theme: this.getThemeColor(),
-			lineNumbers: this.plugin.settings.lineNumbers ? "on" : "off",
-			wordWrap: this.plugin.settings.wordWrap ? "on" : "off",
-			minimap: minmap,
-			folding: this.plugin.settings.folding,
-			fontSize: this.plugin.settings.fontSize,
-			// Controls whether characters are highlighted that can be confused with basic ASCII characters
-			unicodeHighlight: { ambiguousCharacters: false },
-			scrollBeyondLastLine: false,
-			// 'semanticHighlighting.enabled': true,
-
-		});
+		let setting = genEditorSettings(this.plugin.settings, this.file?.extension ?? "");
+		this.monacoEditor = monaco.editor.create(this.contentEl, setting);
 
 		this.monacoEditor.onDidChangeModelContent(() => {
 			this.requestSave();
@@ -96,20 +79,6 @@ export class CodeEditorView extends TextFileView {
 		this.monacoEditor.setValue('');
 	}
 
-
-	getThemeColor(): string {
-		const themeColor = this.plugin.settings.themeColor;
-		let theme: string = "vs";
-		if (themeColor === "AUTO") {
-			theme = isObsidianThemeDark() === true ? "vs-dark" : "vs";
-		} else if (themeColor === "DARK") {
-			theme = "vs-dark";
-		} else if (themeColor === "LIGHT") {
-			theme = "vs";
-		}
-		return theme;
-	}
-
 	private addKeyEvents = () => {
 		window.addEventListener('keydown', this.keyHandle, true);
 	}
@@ -124,7 +93,6 @@ export class CodeEditorView extends TextFileView {
 	原因是obsidian在app.js中增加了全局的keydown并且useCapture为true，猜测可能是为了支持快捷键就把阻止了子元素的事件的处理了
 	*/
 	private keyHandle = (event: KeyboardEvent) => {
-		console.log("keyHandle")
 		const ctrlMap = new Map<string, string>([
 			['f', 'actions.find'],
 			['h', 'editor.action.startFindReplaceAction'],
@@ -134,7 +102,6 @@ export class CodeEditorView extends TextFileView {
 			[']', 'editor.action.indentLines'],
 			['d', 'editor.action.copyLinesDownAction'],
 		]);
-		console.log(event.key);
 		if (event.ctrlKey) {
 			const triggerName = ctrlMap.get(event.key);
 			if (triggerName) {

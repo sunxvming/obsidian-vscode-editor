@@ -1,4 +1,4 @@
-import {moment} from "obsidian";
+import { moment } from "obsidian";
 import ar from "./locale/ar";
 import cz from "./locale/cz";
 import da from "./locale/da";
@@ -51,10 +51,17 @@ const localeMap: { [k: string]: Partial<typeof en> } = {
 
 const locale = localeMap[moment.locale()];
 
-export function t(str: keyof typeof en): string {
+export function t(str: keyof typeof en, ...args: any[]): string {
   if (!locale) {
-    console.error("[oit] Image toolkit locale not found", moment.locale());
+    console.error("vscode editor plugin locale not found", moment.locale());
   }
 
-  return (locale && locale[str]) || en[str];
+  let s = (locale && locale[str]) || en[str];
+
+  return s.replace(/{(\d+)}/g, (match, index) => {
+    const replacement = args[index];
+    return typeof replacement !== 'undefined' ? replacement : match;
+  });
+
 }
+

@@ -1,6 +1,43 @@
+import { EditorSettings } from "./common";
+import * as monaco from 'monaco-editor'
+
 
 export const isObsidianThemeDark = () => document.body.classList.contains("theme-dark");
 
+export function getThemeColor(themeColor: string): string {
+    let theme: string = "vs";
+    if (themeColor === "AUTO") {
+        theme = isObsidianThemeDark() === true ? "vs-dark" : "vs";
+    } else if (themeColor === "DARK") {
+        theme = "vs-dark";
+    } else if (themeColor === "LIGHT") {
+        theme = "vs";
+    }
+    return theme;
+}
+
+export function genEditorSettings(setting: EditorSettings, language: string) {
+    const minmap: monaco.editor.IEditorMinimapOptions = {
+        enabled: setting.minimap,
+    }
+
+    let settings: monaco.editor.IStandaloneEditorConstructionOptions = {
+        automaticLayout: true,
+        language: getLanguage(language),
+        theme: getThemeColor(setting.themeColor),
+        lineNumbers: setting.lineNumbers ? "on" : "off",
+        wordWrap: setting.wordWrap ? "on" : "off",
+        minimap: minmap,
+        folding: setting.folding,
+        fontSize: setting.fontSize,
+        // Controls whether characters are highlighted that can be confused with basic ASCII characters
+        unicodeHighlight: { ambiguousCharacters: false, invisibleCharacters: false },
+        scrollBeyondLastLine: false,
+        'semanticHighlighting.enabled': true,
+
+    }
+    return settings;
+}
 
 export function getLanguage(extension: string) {
     switch (extension) {
@@ -37,6 +74,7 @@ export function getLanguage(extension: string) {
         case "jshtm":
             return "html";
         case "cpp":
+        case "c++":
         case "cc":
         case "cxx":
         case "hpp":

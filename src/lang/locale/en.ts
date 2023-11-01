@@ -21,4 +21,7 @@ export default {
   WORDWRAP: 'Word wrap',
   WORDWRAP_DESC: 'Editor will wrap long lines.',
   CREATE_CODE: 'Create Code File',
+  REGISTE_ERROR: 'VSCode Editor Plugin Error',
+  REGISTE_ERROR_DESC: '{0}\nThere are probably some other file extensions that already registered them. Please change VSCode Editor Plugin\'s extensions in the plugin settings or disable conflicting plugins.',
+  EDIT_FENCE: 'Edit Code Block in Monaco Editor',
 };

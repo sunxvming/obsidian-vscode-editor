@@ -5,6 +5,8 @@ import { CreateCodeFileModal } from "./createCodeFileModal";
 import { CodeFilesSettingsTab } from "./codeFilesSettingsTab";
 import { viewType } from "./common";
 import { t } from 'src/lang/helpers';
+import { FenceEditModal } from "./fenceEditModal";
+import { FenceEditContext } from "./fenceEditContext";
 
 export default class CodeFilesPlugin extends Plugin {
 	settings: EditorSettings;
@@ -13,7 +15,15 @@ export default class CodeFilesPlugin extends Plugin {
 		await this.loadSettings();
 
 		this.registerView(viewType, leaf => new CodeEditorView(leaf, this));
-		this.registerExtensions(this.settings.extensions, viewType);
+
+		try {
+			this.registerExtensions(this.settings.extensions, viewType);
+		} catch (e) {
+			let exts = this.settings.extensions.join(", ")
+			new Notification(t("REGISTE_ERROR"), {
+				body: t("REGISTE_ERROR_DESC", e.message)
+			});
+		}
 
 
 		this.registerEvent(
@@ -40,6 +50,21 @@ export default class CodeFilesPlugin extends Plugin {
 				new CreateCodeFileModal(this).open();
 			}
 		});
+
+		this.registerEvent(
+			this.app.workspace.on("editor-menu", (menu) => {
+				if (!FenceEditContext.create(this).isInFence()) {
+					return;
+				}
+				menu.addItem((item) => {
+					item.setTitle(t("EDIT_FENCE"))
+						.setIcon("code")
+						.onClick(() => {
+							FenceEditModal.openOnCurrentCode(this);
+						});
+				});
+			})
+		);
 
 		this.addSettingTab(new CodeFilesSettingsTab(this.app, this));
 	}
