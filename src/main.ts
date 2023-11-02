@@ -7,9 +7,23 @@ import { viewType } from "./common";
 import { t } from 'src/lang/helpers';
 import { FenceEditModal } from "./fenceEditModal";
 import { FenceEditContext } from "./fenceEditContext";
+import { mountCodeEditor } from "./mountCodeEditor";
+
 
 export default class CodeFilesPlugin extends Plugin {
 	settings: EditorSettings;
+
+	observer: MutationObserver;
+
+	public hover: {
+		linkText: string;
+		sourcePath: string;
+		event: MouseEvent;
+	} = {
+			linkText: "",
+			sourcePath: "",
+			event: new MouseEvent(""),
+		};
 
 	async onload() {
 		await this.loadSettings();
@@ -66,11 +80,87 @@ export default class CodeFilesPlugin extends Plugin {
 			})
 		);
 
+
+
+		//internal links
+		this.observer = new MutationObserver(async (mutation) => {
+			if (mutation.length !== 1) return;
+			if (mutation[0].addedNodes.length !== 1) return;
+			if (this.hover.linkText === null) return;
+			//@ts-ignore
+			if (mutation[0].addedNodes[0].className !== "popover hover-popover") return;
+			const file = this.app.metadataCache.getFirstLinkpathDest(this.hover.linkText, this.hover.sourcePath);
+			if (!file) return;
+			// check file.extension in this.settings.extensions array
+			let valid = this.settings.extensions.includes(file.extension);
+			if (valid === false) return;
+			const fileContent = await this.app.vault.read(file);
+
+			const node: Node = mutation[0].addedNodes[0];
+			const contentEl = createDiv();
+			new mountCodeEditor(
+				contentEl,
+				this,
+				fileContent,
+				file.extension,
+				false,
+				true
+			);
+
+			let w = 700;
+			let h = 500;
+			let gep = 10;
+			if (node instanceof HTMLDivElement) {
+				let x = this.hover.event.clientX;
+				let y = this.hover.event.clientY;
+				let target = this.hover.event.target as HTMLElement;
+				let targetRect = target.getBoundingClientRect();
+				let targetTop = targetRect.top;
+				let targetBottom = targetRect.bottom;
+				let targeRight = targetRect.right
+				node.style.position = "absolute";
+				node.style.left = `${x + gep}px`;
+
+				let spaceBelow = window.innerHeight - y;
+				let spaceAbove = y;
+				console.log("x:", x, "y:", y, "window.innerHeight:", window.innerHeight)
+				if (spaceBelow > h) {
+					node.style.top = `${targetBottom + gep}px`;
+				} else if (spaceAbove > h) {
+					node.style.top = `${targetTop - h - gep}px`;
+				} else {
+					node.style.top = `${targetTop - (h / 2) - gep}px`;
+					node.style.left = `${targeRight + gep * 2}px`;
+				}
+			}
+
+			contentEl.setCssProps({
+				"width": `${w}px`,
+				"height": `${h}px`,
+			});
+
+			node.empty();
+			node.appendChild(contentEl);
+
+		});
+
+		this.registerEvent(this.app.workspace.on("hover-link", async (event: any) => {
+			const linkText: string = event.linktext;
+			const sourcePath: string = event.sourcePath;
+			if (!linkText || !sourcePath) return;
+			this.hover.linkText = linkText;
+			this.hover.sourcePath = sourcePath;
+			this.hover.event = event.event;
+			console.log("hover-link", linkText, this.hover.sourcePath, this.hover.event);
+		}));
+
+		this.observer.observe(document, { childList: true, subtree: true });
+
 		this.addSettingTab(new CodeFilesSettingsTab(this.app, this));
 	}
 
 	onunload() {
-
+		this.observer.disconnect();
 	}
 
 

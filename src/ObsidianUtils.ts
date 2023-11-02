@@ -16,9 +16,18 @@ export function getThemeColor(themeColor: string): string {
     return theme;
 }
 
-export function genEditorSettings(setting: EditorSettings, language: string) {
+export function genEditorSettings(setting: EditorSettings, language: string, minimap: boolean = true, wordwrap: boolean = false) {
+    let minimapFlag = setting.minimap;
+    if (minimap === false) {
+        minimapFlag = false;
+    }
     const minmap: monaco.editor.IEditorMinimapOptions = {
-        enabled: setting.minimap,
+        enabled: minimapFlag,
+    }
+
+    let wordwrapFlag = setting.wordWrap;
+    if (wordwrap === true) {
+        wordwrapFlag = wordwrap;
     }
 
     let settings: monaco.editor.IStandaloneEditorConstructionOptions = {
@@ -26,7 +35,7 @@ export function genEditorSettings(setting: EditorSettings, language: string) {
         language: getLanguage(language),
         theme: getThemeColor(setting.themeColor),
         lineNumbers: setting.lineNumbers ? "on" : "off",
-        wordWrap: setting.wordWrap ? "on" : "off",
+        wordWrap: wordwrapFlag ? "on" : "off",
         minimap: minmap,
         folding: setting.folding,
         fontSize: setting.fontSize,
