@@ -121,9 +121,8 @@ export default class CodeFilesPlugin extends Plugin {
 				node.style.position = "absolute";
 				node.style.left = `${x + gep}px`;
 
-				let spaceBelow = window.innerHeight - y;
-				let spaceAbove = y;
-				console.log("x:", x, "y:", y, "window.innerHeight:", window.innerHeight)
+				let spaceBelow = window.innerHeight - y - gep * 3;
+				let spaceAbove = y - gep * 3;
 				if (spaceBelow > h) {
 					node.style.top = `${targetBottom + gep}px`;
 				} else if (spaceAbove > h) {
@@ -137,6 +136,8 @@ export default class CodeFilesPlugin extends Plugin {
 			contentEl.setCssProps({
 				"width": `${w}px`,
 				"height": `${h}px`,
+				"padding-top": "10px",
+				"padding-bottom": "10px",
 			});
 
 			node.empty();
@@ -151,7 +152,6 @@ export default class CodeFilesPlugin extends Plugin {
 			this.hover.linkText = linkText;
 			this.hover.sourcePath = sourcePath;
 			this.hover.event = event.event;
-			console.log("hover-link", linkText, this.hover.sourcePath, this.hover.event);
 		}));
 
 		this.observer.observe(document, { childList: true, subtree: true });

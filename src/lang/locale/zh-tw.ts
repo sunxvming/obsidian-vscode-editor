@@ -15,4 +15,11 @@ export default {
   LINE_NUMBERS_DESC: '在代碼編輯器中顯示行號。',
   MINIMAP: '代碼縮略圖',
   MINIMAP_DESC: '編輯器將顯示代碼縮略圖。',
+  WORDWRAP: '自動換行',
+  WORDWRAP_DESC: '過長的程式碼行將自動換行。',
+  CREATE_CODE: '新建程式碼檔案',
+  REGISTE_ERROR: 'VSCode Editor Plugin 錯誤',
+  REGISTE_ERROR_DESC: '{0}\n可能已經有其他插件註冊了相同的檔案擴展名。請在 VSCode Editor Plugin 的設置中更改擴展名，或者停用衝突的插件。',
+  EDIT_FENCE: '在 VSCode 編輯器插件中編輯程式碼區塊',
+
 };

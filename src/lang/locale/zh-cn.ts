@@ -21,5 +21,8 @@ export default {
   WORDWRAP: '自动折行',
   WORDWRAP_DESC: '过长的代码行将自动折行。',
   CREATE_CODE: '新建代码文件',
+  REGISTE_ERROR: 'VSCode Editor Plugin 错误',
+  REGISTE_ERROR_DESC: '{0}\n可能已经有其他插件注册了相同的文件扩展名。请在 VSCode Editor Plugin的设置中更改扩展名，或者禁用冲突的插件。',
+  EDIT_FENCE: '在VSCode Editor Plugin中编辑代码块',
 
 };
