@@ -9,6 +9,16 @@ import { FenceEditModal } from "./fenceEditModal";
 import { FenceEditContext } from "./fenceEditContext";
 import { mountCodeEditor } from "./mountCodeEditor";
 
+declare module "obsidian" {
+	interface Workspace {
+		on(
+			name: "hover-link",
+			callback: (e: MouseEvent) => any,
+			ctx?: any,
+		): EventRef;
+	}
+}
+
 
 export default class CodeFilesPlugin extends Plugin {
 	settings: EditorSettings;
