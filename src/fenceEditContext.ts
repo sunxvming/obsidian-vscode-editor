@@ -85,6 +85,11 @@ export class FenceEditContext {
 		const langKey = this.editor.getLine(this.start).slice(3).trim();
 		const language = getLanguage(langKey);
 
+		// console.log("Content: " + content);
+		// console.log("Language key: " + langKey);
+		// console.log("Language: " + language);
+
+
 		return { content, language };
 	}
 

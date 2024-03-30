@@ -69,6 +69,7 @@ export function getLanguage(extension: string) {
         case "cpy":
         case "gyp":
         case "gypi":
+		case "python":
             return "python";
         case "css":
             return "css";
