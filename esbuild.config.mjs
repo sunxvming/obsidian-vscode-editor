@@ -19,8 +19,8 @@ let renamePlugin = {
 			// fs.renameSync('main.css', 'styles.css');
 			const mystyleData = fs.readFileSync('mystyles.css', 'utf8');
 			const mainData = fs.readFileSync('main.css', 'utf8');
-			const combinedData = mystyleData + '\n' + mainData;
-			fs.writeFileSync('styles.css', combinedData, 'utf8');
+			// const combinedData = mystyleData + '\n' + mainData;
+			fs.writeFileSync('styles.css', mainData, 'utf8');
 			console.log('styles.css create success.');
 		})
 	},
