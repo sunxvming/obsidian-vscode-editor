@@ -28,8 +28,8 @@ You no longer have to open another editor just to view or edit a certain code fi
 - It **does not depend on** any third-party network services and can be used even when not connected to the internet.
 - Support for viewing and editing files in various code formats, just like editing code with VSCode.
 - Supports customization of the editor's theme colors, including light and dark themes.
-- Allows customization of the editor's font size, and provides a shortcut to adjust the font size using `Ctrl + mouse wheel`.
-- Supports editing individual code blocks from any Markdown document.
+- Allows customization of the editor's font family, font ligature support, font size, and provides a shortcut to adjust the font size using `Ctrl + mouse wheel`.
+- Supports editing individual code blocks from any Markdown document (uses Obsidian Monospace font).
 - Supports Internal links quick preview.
 - Supports automatic code wrapping, and toggles it with `alt + z`.
 - Provides the option to show/hide line numbers.
@@ -38,10 +38,8 @@ You no longer have to open another editor just to view or edit a certain code fi
 - Supports shortcut icon buttons or commands for creating new code files.
 
 ## How to support different code file
-The default support code file's extensions is `ts, js, py, css, c, cpp, go, rs, java, lua, php`. you can configure for which file extensions to support in the plugin's setting panel.
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20231103094237.png)
-
-
+The default support code file's extensions is `ts, js, py, css, c, cpp, go, rs, java, lua, php, cs`. you can configure for which file extensions to support in the plugin's setting panel.
+![](images/PluginSettings.png)
 
 ## Supported Shortcuts
 Most of the shortcuts are consistent with VS Code. Here are some of the supported shortcuts:
