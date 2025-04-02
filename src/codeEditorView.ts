@@ -101,11 +101,19 @@ export class CodeEditorView extends TextFileView {
 			['[', 'editor.action.outdentLines'],
 			[']', 'editor.action.indentLines'],
 			['d', 'editor.action.copyLinesDownAction'],
+			['v', 'paste'],
 		]);
 		if (event.ctrlKey) {
 			const triggerName = ctrlMap.get(event.key);
 			if (triggerName) {
-				this.monacoEditor.trigger('', triggerName, null);
+				if (triggerName === 'paste') {
+					navigator.clipboard.readText().then((clipboard) => {
+						this.monacoEditor.trigger('source', triggerName, {text: clipboard });
+					})
+				}
+				else {
+					this.monacoEditor.trigger('source', triggerName, null);
+				}
 			}
 		}
 
