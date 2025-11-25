@@ -58,6 +58,26 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 			});
 
 		new Setting(containerEl)
+			.setName(t('FONT_FAMILY'))
+			.setDesc(t('FONT_FAMILY_DESC'))
+			.addTextArea(text => text
+				.setValue(this.plugin.settings.fontFamily)
+				.onChange(async (value) => {
+					this.plugin.settings.fontFamily = value;
+					await this.plugin.saveSettings();
+				})).setClass("setting_ext");
+
+		new Setting(containerEl)
+			.setName(t('FONT_LIGATURES'))
+			.setDesc(t('FONT_LIGATURES_DESC'))
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.fontLigatures)
+				.onChange(async (value) => {
+					this.plugin.settings.fontLigatures = value;
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
 			.setName(t('FILE_EXTENSIONS'))
 			.setDesc(t('FILE_EXTENSIONS_DESC'))
 			.addTextArea(text => text
