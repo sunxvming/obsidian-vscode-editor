@@ -38,8 +38,10 @@ You no longer have to open another editor just to view or edit a certain code fi
 - Supports shortcut icon buttons or commands for creating new code files.
 
 ## How to support different code file
-The default support code file's extensions is `ts, js, py, css, c, cpp, go, rs, java, lua, php, cs`. you can configure for which file extensions to support in the plugin's setting panel.
-![](images/PluginSettings.png)
+The default support code file's extensions is `ts, js, py, css, c, cpp, go, rs, java, lua, php`. you can configure for which file extensions to support in the plugin's setting panel.
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20231103094237.png)
+
+
 
 ## Supported Shortcuts
 Most of the shortcuts are consistent with VS Code. Here are some of the supported shortcuts:
@@ -78,14 +80,14 @@ Most of the shortcuts are consistent with VS Code. Here are some of the supporte
 ## Use screenshot
 
 - **Light color theme**
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921184929.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20230921184929.png)
 
 - **Dark color theme**
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921184840.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20230921184840.png)
 
 
 - **Create code file**
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921185107.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20230921185107.png)
 
 
 ## Supported Code Block Editing
@@ -94,15 +96,15 @@ Most of the shortcuts are consistent with VS Code. Here are some of the supporte
  
  This will open a new modal with a Monaco Editor instance in which you can edit the code block, which will automatically sync back to the block in your document when you close the modal.
  
-![GIF 2023-11-3 10-25-01.gif](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/GIF%202023-11-3%2010-25-01.gif)
+![GIF 2023-11-3 10-25-01.gif](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/GIF%202023-11-3%2010-25-01.gif)
 
 
 ## Supported Internal links quick preview
 You can add a internal link to a code file in obsidian, and hovering the cursor over the link for **quick preview**.
-![GIF 2023-11-2 19-48-55.gif](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/GIF%202023-11-2%2019-48-55.gif)
+![GIF 2023-11-2 19-48-55.gif](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/GIF%202023-11-2%2019-48-55.gif)
 
 Code file will not appear  in file prompt list when intert Internal links. You need open `Detect all file extensions` setting.
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20231103095138.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20231103095138.png)
 
 ## Installation
 

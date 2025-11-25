@@ -36,7 +36,7 @@ Obsidian 默认不支持对各种代码文件的查看和编辑，而 Obsidian V
 
 ## 如何支持不同的代码文件
 默认支持的代码文件扩展名是 `ts, js, py, css, c, cpp, go, rs, java, lua, php`。你可以在插件的设置面板中配置要支持哪些文件扩展名
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20231103103939.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20231103103939.png)
 
 
 ## 支持的快捷键
@@ -76,13 +76,13 @@ Obsidian 默认不支持对各种代码文件的查看和编辑，而 Obsidian V
 
 ## 使用截图
 - **亮色主题**
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921184929.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20230921184929.png)
 
 - **暗色主题**
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921184840.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20230921184840.png)
 
 - **创建代码文件**
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20230921185107.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20230921185107.png)
 
 
 ## 代码块编辑的支持
@@ -90,16 +90,16 @@ Obsidian 默认不支持对各种代码文件的查看和编辑，而 Obsidian V
  只需**右键单击**任何代码块，然后单击“**在VSCode Editor Plugin中编辑代码块**”。
  
  这将打开一个新的代码编辑窗口，你可以在其中编辑代码块，然后在关闭窗口时，代码块将自动同步回到您的文档中。
-![GIF 2023-11-3 10-25-01.gif](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/GIF%202023-11-3%2010-25-01.gif)
+![GIF 2023-11-3 10-25-01.gif](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/GIF%202023-11-3%2010-25-01.gif)
  
 
 
 ## 内部链接快速预览的支持
 你可以在 Obsidian 中添加一个指向代码文件的内部链接，将鼠标悬停在链接上即可进行**快速预览**。
-![GIF 2023-11-2 19-48-55.gif](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/GIF%202023-11-2%2019-48-55.gif)
+![GIF 2023-11-2 19-48-55.gif](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/GIF%202023-11-2%2019-48-55.gif)
 
 当插入内部链接时，默认代码文件不会出现在文件提示列表中。您需要开启“检测所有类型文件”的设置。
-![image.png](https://sxm-upload.oss-cn-beijing.aliyuncs.com/imgs/20231103104141.png)
+![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20231103104141.png)
 
 ## 安装
 
