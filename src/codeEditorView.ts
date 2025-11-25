@@ -93,6 +93,9 @@ export class CodeEditorView extends TextFileView {
 	原因是obsidian在app.js中增加了全局的keydown并且useCapture为true，猜测可能是为了支持快捷键就把阻止了子元素的事件的处理了
 	*/
 	private keyHandle = (event: KeyboardEvent) => {
+		if (!this.monacoEditor.hasTextFocus())
+			return;
+
 		const ctrlMap = new Map<string, string>([
 			['f', 'actions.find'],
 			['h', 'editor.action.startFindReplaceAction'],
@@ -101,11 +104,21 @@ export class CodeEditorView extends TextFileView {
 			['[', 'editor.action.outdentLines'],
 			[']', 'editor.action.indentLines'],
 			['d', 'editor.action.copyLinesDownAction'],
+			['v', 'paste'],
 		]);
 		if (event.ctrlKey) {
 			const triggerName = ctrlMap.get(event.key);
 			if (triggerName) {
-				this.monacoEditor.trigger('', triggerName, null);
+				event.preventDefault();
+				event.stopPropagation();
+				if (triggerName === 'paste') {
+					navigator.clipboard.readText().then((clipboard) => {
+						this.monacoEditor.trigger('source', triggerName, {text: clipboard });
+					})
+				}
+				else {
+					this.monacoEditor.trigger('source', triggerName, null);
+				}
 			}
 		}
 
