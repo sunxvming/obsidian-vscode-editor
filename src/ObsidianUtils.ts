@@ -318,6 +318,14 @@ export function getLanguage(extension: string) {
         case "c":
         case "h":
             return "c";
+        case "ps1":
+        case "psm1":
+        case "psd1":
+        case "ps1xml":
+        case "psc1":
+        case "pssc":
+        case "psrc":            
+            return "powershell";
         default:
             return "plaintext";
     }
