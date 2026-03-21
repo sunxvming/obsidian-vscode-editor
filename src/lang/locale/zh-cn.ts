@@ -15,7 +15,7 @@ export default {
   FONT_SIZE: '字体大小',
   FONT_SIZE_DESC: '设置代码编辑器的字体大小。你也可以使用"Ctrl +鼠标滚轮"来放大和缩小代码编辑器。',
   FILE_EXTENSIONS: '文件扩展名',
-  FILE_EXTENSIONS_DESC: '这些扩展名的文件将显示在侧边栏中，并可以从中创建新文件。用逗号分隔。更改文件扩展名需要重新启动才能生效。',
+  FILE_EXTENSIONS_DESC: '这些扩展名的文件将显示在侧边栏中，并可以从中创建新文件。用逗号分隔。保存后，新打开的文件会立即使用更新后的扩展名列表。',
   FOLDING: '代码块折叠',
   FOLDING_DESC: '编辑器将支持代码块折叠。',
   LINE_NUMBERS: '行号',

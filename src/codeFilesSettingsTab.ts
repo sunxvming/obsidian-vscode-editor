@@ -83,7 +83,7 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 			.addTextArea(text => text
 				.setValue(this.plugin.settings.extensions.join(","))
 				.onChange(async (value) => {
-					this.plugin.settings.extensions = value.split(",");
+					this.plugin.settings.extensions = this.plugin.normalizeExtensions(value.split(","));
 					await this.plugin.saveSettings();
 				})).setClass("setting_ext");
 
