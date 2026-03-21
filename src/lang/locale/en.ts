@@ -15,7 +15,7 @@ export default {
   FONT_SIZE: 'Font size',
   FONT_SIZE_DESC: 'Set the font size of the code editor.You can also use "ctrl + mouse wheel" to zoom in and out of the code editor.',
   FILE_EXTENSIONS: 'File extensions',
-  FILE_EXTENSIONS_DESC: 'Files with these extensions will show up in the sidebar, and will be available to create new files from. Seperated by commas. Changes to the file extensions need a restart to take effect.',
+  FILE_EXTENSIONS_DESC: 'Files with these extensions will show up in the sidebar, and will be available to create new files from. Seperated by commas. Newly opened files use the updated list as soon as you save.',
   FOLDING: 'Code block folding',
   FOLDING_DESC: 'Editor will support code block folding.',
   LINE_NUMBERS: 'Line numbers',
