@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import { Plugin, TFolder } from "obsidian";
 import { DEFAULT_SETTINGS, EditorSettings } from "./common";
 import { CodeEditorView } from "./codeEditorView";
 import { CreateCodeFileModal } from "./createCodeFileModal";
@@ -52,6 +52,9 @@ export default class CodeFilesPlugin extends Plugin {
 
 		this.registerEvent(
 			this.app.workspace.on("file-menu", (menu, file) => {
+				if (!(file instanceof TFolder)) {
+					return; // Can only create files in folders!
+				}
 				menu.addItem((item) => {
 					item
 						.setTitle(t("CREATE_CODE"))
