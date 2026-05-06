@@ -96,6 +96,8 @@ export class CodeEditorView extends TextFileView {
 		if (!this.monacoEditor.hasTextFocus())
 			return;
 
+		const isMod = event.ctrlKey || event.metaKey;
+
 		const ctrlMap = new Map<string, string>([
 			['f', 'actions.find'],
 			['h', 'editor.action.startFindReplaceAction'],
@@ -105,8 +107,11 @@ export class CodeEditorView extends TextFileView {
 			[']', 'editor.action.indentLines'],
 			['d', 'editor.action.copyLinesDownAction'],
 			['v', 'paste'],
+			['c', 'copy'],
+			['x', 'cut'],
+			['a', 'editor.action.selectAll'],
 		]);
-		if (event.ctrlKey) {
+		if (isMod) {
 			const triggerName = ctrlMap.get(event.key);
 			if (triggerName) {
 				event.preventDefault();
@@ -115,6 +120,27 @@ export class CodeEditorView extends TextFileView {
 					navigator.clipboard.readText().then((clipboard) => {
 						this.monacoEditor.trigger('source', triggerName, {text: clipboard });
 					})
+				}
+				else if (triggerName === 'copy') {
+					const selection = this.monacoEditor.getSelection();
+					const model = this.monacoEditor.getModel();
+					if (selection && model) {
+						const text = model.getValueInRange(selection);
+						navigator.clipboard.writeText(text);
+					}
+				}
+				else if (triggerName === 'cut') {
+					const selection = this.monacoEditor.getSelection();
+					const model = this.monacoEditor.getModel();
+					if (selection && model) {
+						const text = model.getValueInRange(selection);
+						navigator.clipboard.writeText(text);
+						this.monacoEditor.executeEdits('cut', [{
+							range: selection,
+							text: '',
+							forceMoveMarkers: true
+						}]);
+					}
 				}
 				else {
 					this.monacoEditor.trigger('source', triggerName, null);
@@ -137,7 +163,7 @@ export class CodeEditorView extends TextFileView {
 	}
 
 	private mousewheelHandle = (event: WheelEvent) => {
-		if (event.ctrlKey) {
+		if (event.ctrlKey || event.metaKey) {
 			let delta = 0 < event.deltaY ? 1 : -1;
 			this.plugin.settings.fontSize += delta;
 			this.plugin.saveSettings();
