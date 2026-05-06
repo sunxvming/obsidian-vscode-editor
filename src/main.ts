@@ -37,6 +37,7 @@ export default class CodeFilesPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+		this.patchExecCommand();
 
 		this.registerView(viewType, leaf => new CodeEditorView(leaf, this));
 
@@ -181,6 +182,38 @@ export default class CodeFilesPlugin extends Plugin {
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+	}
+
+	// Fix context menu paste not working in Electron: execCommand('paste') is disabled,
+	// and Monaco's clipboardService fallback only triggers on platform.isWeb (false for native).
+	// Intercepts 'paste' command to read from Electron clipboard and dispatch a synthetic paste event.
+
+	private patchExecCommand() {
+		const originalExecCommand = document.execCommand.bind(document);
+		document.execCommand = function (commandId: string, a?: boolean, value?: string): boolean {
+			if (commandId === 'paste') {
+				try {
+					// @ts-ignore - Electron clipboard API available in Obsidian desktop
+					const { clipboard } = require('electron');
+					const text = clipboard.readText();
+					if (text && document.activeElement) {
+						const dataTransfer = new DataTransfer();
+						dataTransfer.setData('text/plain', text);
+						const pasteEvent = new ClipboardEvent('paste', {
+							clipboardData: dataTransfer,
+							bubbles: true,
+							cancelable: true,
+						});
+						document.activeElement.dispatchEvent(pasteEvent);
+						return true;
+					}
+				} catch {
+					// ignore
+				}
+				return false;
+			}
+			return originalExecCommand(commandId, a, value);
+		};
 	}
 
 }

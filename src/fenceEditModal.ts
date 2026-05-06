@@ -39,8 +39,10 @@ export class FenceEditModal extends Modal {
 	}
 
 	onClose() {
+		const value = this.codeEditor.getValue();
+		this.codeEditor.dispose();
 		super.onClose();
-		this.onSave(this.codeEditor.getValue());
+		this.onSave(value);
 	}
 
 	static openOnCurrentCode(plugin: CodeFilesPlugin) {
