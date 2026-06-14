@@ -1,4 +1,3 @@
-
 import CodeFilesPlugin from "./main";
 import * as monaco from 'monaco-editor'
 import { genEditorSettings } from "./ObsidianUtils";
@@ -23,6 +22,4 @@ export class mountCodeEditor {
 	getValue() {
 		return this.monacoEditor.getValue();
 	}
-
-
 }

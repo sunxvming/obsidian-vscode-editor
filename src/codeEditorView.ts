@@ -84,7 +84,7 @@ export class CodeEditorView extends TextFileView {
 	}
 
 	private addCtrlKeyWheelEvents = () => {
-		this.containerEl.addEventListener('wheel', this.mousewheelHandle, true);
+		this.containerEl.addEventListener('wheel', this.mousewheelHandle, { capture: true, passive: true });
 
 	}
 
