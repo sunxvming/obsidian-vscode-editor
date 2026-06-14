@@ -55,9 +55,6 @@ const context = await esbuild.context({
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
 	outfile: "main.js",
-	// indicate how to load files with ttf extension, which is not supported by default
-	// 'file':This loader will copy the file to the output directory, but this cont not load by obsidian 
-	// 'base64': embed it into the bundle as a string using Base64 encoding	
 	loader: {   
 		'.ttf': 'base64', 
 	},	

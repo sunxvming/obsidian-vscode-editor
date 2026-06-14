@@ -19,6 +19,19 @@ declare module "obsidian" {
 	}
 }
 
+// Obsidian bundles everything into one JS file and blocks external Worker scripts.
+// Pointing all Monaco workers at the base editor worker suppresses the
+// "Unexpected usage" errors from the JS/TS/JSON language service workers
+// trying (and failing) to load via importScripts inside the sandboxed environment.
+(window as any).MonacoEnvironment = {
+	getWorker: function () {
+		// Return a do-nothing worker — Monaco will fall back to running
+		// language services synchronously on the main thread (limited but functional).
+		return new Worker(
+			URL.createObjectURL(new Blob([''], { type: 'application/javascript' }))
+		);
+	}
+};
 
 export default class CodeFilesPlugin extends Plugin {
 	settings: EditorSettings;
