@@ -1,5 +1,5 @@
 
-import { TextFileView, TFile, WorkspaceLeaf } from "obsidian";
+import { Keymap, TextFileView, TFile, WorkspaceLeaf } from "obsidian";
 import { viewType } from "./common";
 import CodeFilesPlugin from "./main";
 import * as monaco from 'monaco-editor'
@@ -106,7 +106,8 @@ export class CodeEditorView extends TextFileView {
 			['d', 'editor.action.copyLinesDownAction'],
 			['v', 'paste'],
 		]);
-		if (event.ctrlKey) {
+
+		if (Keymap.isModifier(event, "Mod")) {
 			const triggerName = ctrlMap.get(event.key);
 			if (triggerName) {
 				event.preventDefault();
