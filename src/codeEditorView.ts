@@ -30,6 +30,7 @@ export class CodeEditorView extends TextFileView {
 
 		this.monacoEditor.onDidChangeModelContent(() => {
 			this.requestSave();
+			this.app.workspace.trigger("quick-preview", this.file, this.monacoEditor.getValue());
 		});
 
 		this.addCtrlKeyWheelEvents();
