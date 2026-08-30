@@ -8,6 +8,7 @@ import { t } from 'src/lang/helpers';
 import { FenceEditModal } from "./fenceEditModal";
 import { FenceEditContext } from "./fenceEditContext";
 import { mountCodeEditor } from "./mountCodeEditor";
+import { ViewStates } from "./viewStates";
 
 declare module "obsidian" {
 	interface Workspace {
@@ -22,6 +23,7 @@ declare module "obsidian" {
 
 export default class CodeFilesPlugin extends Plugin {
 	settings: EditorSettings;
+	viewStates: ViewStates;
 
 	observer: MutationObserver;
 
@@ -37,6 +39,11 @@ export default class CodeFilesPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		this.viewStates = new ViewStates(this);
+		await this.viewStates.load();
+		this.registerEvent(this.app.vault.on("rename", (file, oldPath) => this.viewStates.rename(file.path, oldPath)));
+		this.registerEvent(this.app.workspace.on("quit", () => this.saveViewStates()));
 
 		this.registerView(viewType, leaf => new CodeEditorView(leaf, this));
 
@@ -171,6 +178,17 @@ export default class CodeFilesPlugin extends Plugin {
 
 	onunload() {
 		this.observer.disconnect();
+		this.saveViewStates();
+	}
+
+	saveViewStates() {
+		if (this.settings.rememberViewState)
+		{
+			for (const leaf of this.app.workspace.getLeavesOfType(viewType)) {
+				(leaf.view as CodeEditorView).saveViewState();
+			}
+			this.viewStates.writeAllStatesToDisk();
+		}
 	}
 
 

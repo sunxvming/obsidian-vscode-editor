@@ -38,12 +38,28 @@ export class CodeEditorView extends TextFileView {
 		// const model = this.monacoEditor.getModel();
 		// monaco.editor.setModelLanguage(model, this.getLanguage());
 		await super.onLoadFile(file);
+
+		if (this.plugin.settings.rememberViewState) {
+			this.monacoEditor.restoreViewState(this.plugin.viewStates.get(file.path));
+		}
 	}
 
 	async onUnloadFile(file: TFile) {
+		if (this.plugin.settings.rememberViewState)
+		{
+			this.saveViewState(file);
+			this.plugin.viewStates.writeAllStatesToDisk();
+		}
+
 		window.removeEventListener('keydown', this.keyHandle, true);
 		await super.onUnloadFile(file);
 		this.monacoEditor.dispose();
+	}
+
+	saveViewState(file = this.file) {
+		if (file) {
+			this.plugin.viewStates.set(file.path, this.monacoEditor.saveViewState());
+		}
 	}
 
 	async onClose() {
@@ -69,11 +85,13 @@ export class CodeEditorView extends TextFileView {
 	}
 
 	setViewData = (data: string, clear: boolean) => {
+		const previousViewState = this.monacoEditor.saveViewState();
 		if (clear) {
 			this.monacoEditor.getModel()?.setValue(data);
 		} else {
 			this.monacoEditor.setValue(data);
 		}
+		this.monacoEditor.restoreViewState(previousViewState);
 	}
 	clear = () => {
 		this.monacoEditor.setValue('');

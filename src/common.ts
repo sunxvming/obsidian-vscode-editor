@@ -11,6 +11,7 @@ export interface EditorSettings {
 	fontSize: number;
 	fontFamily: string;
 	fontLigatures: boolean;
+	rememberViewState: boolean;
 }
 
 export const DEFAULT_SETTINGS: EditorSettings = {
@@ -25,6 +26,7 @@ export const DEFAULT_SETTINGS: EditorSettings = {
 	fontSize: 14,
 	fontFamily: "'Cascadia Code', 'Fira Code', Consolas, 'Courier New', monospace",
 	fontLigatures: true,
+	rememberViewState: false,
 }
 
 

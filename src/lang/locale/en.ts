@@ -24,6 +24,8 @@ export default {
   MINIMAP_DESC: 'Editor will show a minimap.',
   WORDWRAP: 'Word wrap',
   WORDWRAP_DESC: 'Editor will wrap long lines.',
+  REMEMBER_VIEW_STATE: 'Remember view state',
+  REMEMBER_VIEW_STATE_DESC: 'Reopening a code file returns the cursor, scroll position and folded regions to where you left them.',
   CREATE_CODE: 'Create Code File',
   REGISTE_ERROR: 'VSCode Editor Plugin Error',
   REGISTE_ERROR_DESC: '{0}\nThere may already be other plugins registered with the same file extension. Please change the extension in the settings of the VSCode Editor Plugin or disable conflicting plugins.',

@@ -25,3 +25,5 @@ data.json
 .DS_Store
 
 
+# Saved view states from this plugin
+view-states.json

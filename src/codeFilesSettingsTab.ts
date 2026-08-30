@@ -129,6 +129,16 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 				}));
 
+		new Setting(containerEl)
+			.setName(t('REMEMBER_VIEW_STATE'))
+			.setDesc(t('REMEMBER_VIEW_STATE_DESC'))
+			.addToggle(toggle => toggle
+				.setValue(this.plugin.settings.rememberViewState)
+				.onChange(async (value) => {
+					this.plugin.settings.rememberViewState = value;
+					await this.plugin.saveSettings();
+				}));
+
 
 
 
