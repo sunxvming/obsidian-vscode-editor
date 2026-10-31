@@ -106,6 +106,29 @@ You can add a internal link to a code file in obsidian, and hovering the cursor 
 Code file will not appear  in file prompt list when intert Internal links. You need open `Detect all file extensions` setting.
 ![image.png](https://github.com/sunxvming/obsidian-vscode-editor/blob/main/img/20231103095138.png)
 
+## Canvas flowcharts
+
+This fork can generate [Obsidian Canvas](https://obsidian.md/canvas) flowcharts from your code
+(requires the [Advanced Canvas](https://github.com/Developer-Mike/obsidian-advanced-canvas)
+plugin):
+
+- **Generate flowcharts from code** — right-click a code folder to build a
+  `flowcharts/Subflowcharts/` tree: one canvas per symbol (narrowed to that symbol in the code
+  file), one per code file, and one per folder, wired with edges detected from the code
+  (same-file calls, cross-file references, SpacetimeDB reducer/table wiring, Godot `.tscn`
+  scene wiring). Every canvas records its outgoing edges as metadata tags, so the tree can be
+  rebuilt without re-reading the code.
+- **Flows (flows.json)** — right-click generated canvases and use "Include in flow ▸" to curate
+  named sets; membership is stored in `flowcharts/flows.json`, so it survives refactors and
+  regenerations and can be edited by hand.
+- **Generate aggregate flowchart from subflowchart metadata** — right-click any folder
+  containing canvases to rebuild the aggregate canvases from the edge tags and compose each
+  flow into `main.canvas` (the default "main" flow) or `main-<name>.canvas`.
+- **Regenerate all flowcharts** (command palette) — redoes every flowchart tree in the vault in
+  one pass: code model → sub-flowcharts → aggregates → flows.
+- Node ids are deterministic and manual layouts are preserved on regeneration; stale generated
+  canvases are pruned automatically (toggle in settings).
+
 ## Installation
 
 **Installation from Obsidian's community plugins**: 

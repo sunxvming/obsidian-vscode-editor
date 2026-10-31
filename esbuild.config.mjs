@@ -26,6 +26,29 @@ let renamePlugin = {
 	},
 }
 
+const copyToDistPlugin = {
+	name: 'copy-to-dist',
+	setup(build) {
+		build.onEnd(() => {
+			fs.mkdirSync('dist', { recursive: true });
+			for (const f of ['main.js', 'manifest.json', 'styles.css']) {
+				if (fs.existsSync(f)) fs.copyFileSync(f, 'dist/' + f);
+			}
+			// tree-sitter WASM runtime + grammars, loaded at runtime by absolute path
+			// (kept out of the esbuild bundle on purpose)
+			const wasmFiles = [
+				'node_modules/web-tree-sitter/web-tree-sitter.wasm',
+				'node_modules/tree-sitter-c-sharp/tree-sitter-c_sharp.wasm',
+				'node_modules/tree-sitter-rust/tree-sitter-rust.wasm',
+			];
+			for (const f of wasmFiles) {
+				if (fs.existsSync(f)) fs.copyFileSync(f, 'dist/' + f.split('/').pop());
+			}
+			console.log('copied build output to dist/.');
+		});
+	},
+}
+
 const prod = (process.argv[2] === "production");
 
 const context = await esbuild.context({
@@ -50,7 +73,7 @@ const context = await esbuild.context({
 		"@lezer/lr",
 		...builtins],
 	format: "cjs",
-	target: "es2018",
+	target: "es2020",
 	logLevel: "info",
 	sourcemap: prod ? false : "inline",
 	treeShaking: true,
@@ -61,7 +84,7 @@ const context = await esbuild.context({
 	loader: {   
 		'.ttf': 'base64', 
 	},	
-	plugins: [renamePlugin],
+	plugins: [renamePlugin, copyToDistPlugin],
 });
 
 if (prod) {

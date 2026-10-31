@@ -8,6 +8,11 @@ import { t } from 'src/lang/helpers';
 import { FenceEditModal } from "./fenceEditModal";
 import { FenceEditContext } from "./fenceEditContext";
 import { mountCodeEditor } from "./mountCodeEditor";
+import { registerCodeEmbedCreators } from "./codeEmbed";
+import { SymbolResolver, parseCodeSubpath, isSymbolCapableExtension } from "./symbolResolver";
+import { CodeFunctionSuggest } from "./functionSuggest";
+import { setupCanvasNarrowing, setupCanvasAddCodeFile, setupCanvasCardMenuButton } from "./canvasNarrow";
+import { FlowchartCommands, setupFlowchartMenus } from "./flowchartMenu";
 
 declare module "obsidian" {
 	interface Workspace {
@@ -25,6 +30,10 @@ export default class CodeFilesPlugin extends Plugin {
 
 	observer: MutationObserver;
 
+	symbolResolver: SymbolResolver;
+
+	flowchart: FlowchartCommands;
+
 	public hover: {
 		linkText: string;
 		sourcePath: string;
@@ -37,6 +46,27 @@ export default class CodeFilesPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
+
+		this.symbolResolver = new SymbolResolver(this.app, this.manifest.dir ?? "");
+		registerCodeEmbedCreators(this);
+		setupCanvasNarrowing(this);
+		setupCanvasAddCodeFile(this);
+		setupCanvasCardMenuButton(this);
+		this.flowchart = setupFlowchartMenus(this);
+
+		// Symbol suggestions for [[file.cs#… — moved to the front of the
+		// internal suggest list so it wins over core's heading suggest (which
+		// would otherwise swallow the trigger for non-markdown files).
+		const functionSuggest = new CodeFunctionSuggest(this);
+		this.registerEditorSuggest(functionSuggest);
+		const suggests = (this.app.workspace as any).editorSuggest?.suggests;
+		if (Array.isArray(suggests)) {
+			const i = suggests.indexOf(functionSuggest);
+			if (i > 0) {
+				suggests.splice(i, 1);
+				suggests.unshift(functionSuggest);
+			}
+		}
 
 		this.registerView(viewType, leaf => new CodeEditorView(leaf, this));
 
@@ -99,12 +129,22 @@ export default class CodeFilesPlugin extends Plugin {
 			if (this.hover.linkText === null) return;
 			//@ts-ignore
 			if (mutation[0].addedNodes[0].className !== "popover hover-popover") return;
-			const file = this.app.metadataCache.getFirstLinkpathDest(this.hover.linkText, this.hover.sourcePath);
+			const { linkpath, symbol, occurrence } = parseCodeSubpath(this.hover.linkText);
+			const file = this.app.metadataCache.getFirstLinkpathDest(linkpath, this.hover.sourcePath);
 			if (!file) return;
 			// check file.extension in this.settings.extensions array
 			let valid = this.settings.extensions.includes(file.extension);
 			if (valid === false) return;
-			const fileContent = await this.app.vault.read(file);
+			let fileContent = await this.app.vault.read(file);
+
+			if (symbol && isSymbolCapableExtension(file.extension)) {
+				const symbolRange = await this.symbolResolver.findSymbol(
+					fileContent, file.extension, symbol, occurrence, this.settings.linkableSymbolKinds
+				);
+				if (symbolRange) {
+					fileContent = symbolRange.text;
+				}
+			}
 
 			const node: Node = mutation[0].addedNodes[0];
 			const contentEl = createDiv();
@@ -171,6 +211,8 @@ export default class CodeFilesPlugin extends Plugin {
 
 	onunload() {
 		this.observer.disconnect();
+		// Free the long-lived tree-sitter parsers (see SymbolResolver.parsers).
+		this.symbolResolver?.dispose();
 	}
 
 

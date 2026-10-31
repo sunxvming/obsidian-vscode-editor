@@ -25,3 +25,7 @@ data.json
 .DS_Store
 
 
+CLAUDE.md
+# Build output is published on the orphan "dist" branch, consumed by
+# the vault as a submodule; the local dist/ is a symlink into the vault.
+dist

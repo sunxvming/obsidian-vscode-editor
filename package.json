@@ -5,7 +5,7 @@
 	"main": "src/main.js",
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
-		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production  && terser -o main.js main.js",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production  && terser -o main.js main.js && node -e \"require('fs').copyFileSync('main.js','dist/main.js')\"",
 		"version": "node version-bump.mjs && git add manifest.json versions.json"
 	},
 	"keywords": [],
@@ -23,6 +23,10 @@
 		"typescript": "4.7.4"
 	},
 	"dependencies": {
-		"monaco-editor": "^0.43.0"
+		"@dagrejs/dagre": "^3.1.0",
+		"monaco-editor": "^0.43.0",
+		"tree-sitter-c-sharp": "^0.23.5",
+		"tree-sitter-rust": "^0.24.0",
+		"web-tree-sitter": "^0.26.11"
 	}
 }

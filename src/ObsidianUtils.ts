@@ -16,7 +16,7 @@ export function getThemeColor(themeColor: string): string {
     return theme;
 }
 
-export function genEditorSettings(setting: EditorSettings, language: string, minimap: boolean = true, wordwrap: boolean = false) {
+export function genEditorSettings(setting: EditorSettings, language: string, minimap: boolean = true, wordwrap: boolean = false, overrides: monaco.editor.IStandaloneEditorConstructionOptions = {}) {
     let minimapFlag = setting.minimap;
     if (minimap === false) {
         minimapFlag = false;
@@ -47,7 +47,7 @@ export function genEditorSettings(setting: EditorSettings, language: string, min
         'semanticHighlighting.enabled': true,
 
     }
-    return settings;
+    return Object.assign(settings, overrides);
 }
 
 export function getLanguage(extension: string) {

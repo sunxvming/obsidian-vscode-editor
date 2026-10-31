@@ -10,12 +10,12 @@ export class mountCodeEditor {
 	monacoEditor: monaco.editor.IStandaloneCodeEditor;
 	plugin: CodeFilesPlugin;
 
-	constructor(contentEl: HTMLElement, plugin: CodeFilesPlugin, code: string, language: string, miniMap: boolean = true, wordWrap: boolean = false) {
+	constructor(contentEl: HTMLElement, plugin: CodeFilesPlugin, code: string, language: string, miniMap: boolean = true, wordWrap: boolean = false, overrides: monaco.editor.IStandaloneEditorConstructionOptions = {}) {
 		this.contentEl = contentEl;
 		this.plugin = plugin;
 		this.value = code;
 
-		let setting = genEditorSettings(this.plugin.settings, language, miniMap, wordWrap);
+		let setting = genEditorSettings(this.plugin.settings, language, miniMap, wordWrap, overrides);
 		this.monacoEditor = monaco.editor.create(this.contentEl, setting);
 		this.monacoEditor.setValue(this.value);
 	}

@@ -4,12 +4,14 @@ import { viewType } from "./common";
 import CodeFilesPlugin from "./main";
 import * as monaco from 'monaco-editor'
 import { getLanguage, getThemeColor, genEditorSettings } from "./ObsidianUtils";
+import { parseCodeSubpath, isSymbolCapableExtension } from "./symbolResolver";
 
 
 export class CodeEditorView extends TextFileView {
 
 	value = "";
 	monacoEditor: monaco.editor.IStandaloneCodeEditor;
+	private pendingSubpath: string | null = null;
 
 
 	constructor(leaf: WorkspaceLeaf, private plugin: CodeFilesPlugin) {
@@ -38,6 +40,41 @@ export class CodeEditorView extends TextFileView {
 		// const model = this.monacoEditor.getModel();
 		// monaco.editor.setModelLanguage(model, this.getLanguage());
 		await super.onLoadFile(file);
+
+		// [[file.cs#SomeSymbol]] links carry a subpath in ephemeral state —
+		// jump to the symbol once the file is loaded.
+		const ephemeralState: any = this.leaf.getEphemeralState();
+		if (ephemeralState?.subpath) {
+			this.pendingSubpath = ephemeralState.subpath;
+		}
+		await this.revealPendingSymbol();
+	}
+
+	setEphemeralState(state: any) {
+		super.setEphemeralState(state);
+		if (state?.subpath) {
+			this.pendingSubpath = state.subpath;
+			this.revealPendingSymbol();
+		}
+	}
+
+	private async revealPendingSymbol() {
+		if (!this.pendingSubpath || !this.monacoEditor || !this.file) return;
+		const extension = this.file.extension;
+		if (!isSymbolCapableExtension(extension)) return;
+		const { symbol, occurrence } = parseCodeSubpath(this.pendingSubpath);
+		if (!symbol) return;
+
+		const symbolRange = await this.plugin.symbolResolver.findSymbol(
+			this.monacoEditor.getValue(), extension, symbol, occurrence,
+			this.plugin.settings.linkableSymbolKinds
+		);
+		if (!symbolRange) return;
+
+		this.pendingSubpath = null;
+		this.monacoEditor.revealLineInCenter(symbolRange.startLine);
+		this.monacoEditor.setPosition({ lineNumber: symbolRange.startLine, column: 1 });
+		this.monacoEditor.focus();
 	}
 
 	async onUnloadFile(file: TFile) {
