@@ -24,9 +24,28 @@ import {
 } from "./flowchartCanvas";
 import {
 	flowCanvasFileName,
+	flowMembers,
+	isListFlow,
 	migrateLegacyFlagsIfNeeded,
-	readFlows,
+	readFlowsManifest,
 } from "./flowchartFlows";
+import {
+	CodeIndex,
+	ParsedCanvas,
+	buildCodeIndex,
+	globToRegExp,
+	readTreeCanvases,
+	symbolFileNode,
+	symbolNameOf,
+} from "./flowchartCodeLinks";
+import { CodeSide, parseCodeSides, sideOf } from "./flowchartSides";
+import {
+	SubflowchartResolver,
+	TimelineFlowResult,
+	TimelineSpecError,
+	composeTimelineFlow,
+	isTimelineFlow,
+} from "./flowchartTimeline";
 
 /**
  * "Generate aggregate flowchart from subflowchart metadata" — the single
@@ -54,6 +73,17 @@ import {
  *    pairs collapse, labels carry over; chain tags (`.canvas` targets) are
  *    never drawn. No code model is built for this — the tags carry
  *    everything.
+ *    A list flow written as an object with `"shared-links": true` also gets
+ *    **shared-code links**: two members on different code sides (see
+ *    flowchartSides.ts — e.g. a server system and a client crate) that both
+ *    use symbols no member covers and that live on neither side (the shared
+ *    `crates/`) get one dotted, arrowless `shares …` edge per pair — the
+ *    connection a call graph hides, since neither member calls the other.
+ *    `"shared-ignore": ["crates/kg_hex/**"]` drops ubiquitous helpers and
+ *    `"shared-min": N` drops pairs sharing fewer than N symbols.
+ *    **Timeline flows** (`"layout": "timeline"`) are laid out by
+ *    flowchartTimeline.ts instead, with this tree's symbol canvases as the
+ *    code index for their `code-links`.
  *
  * Tree structure is read off the directory layout, so collision renames
  * survive: a `<X>_codefile/` dir's canvas is its direct `.canvas` child tagged
@@ -67,8 +97,15 @@ import {
 export interface RegenerateFlowResult {
 	name: string;
 	path: string;
+	/** `list` (member canvases) or `timeline` (laid out by flowchartTimeline.ts). */
+	kind: "list" | "timeline";
+	/** List flows: member canvases drawn. Timeline flows: cards drawn. */
 	included: number;
 	edgeCount: number;
+	/** List flows with `"shared-links"`: how many of the edges are shared-code links. */
+	sharedEdgeCount?: number;
+	/** Timeline flows: the full layout report (warnings, missing headings, code links). */
+	timeline?: TimelineFlowResult;
 }
 
 export interface RegenerateResult {
@@ -76,6 +113,8 @@ export interface RegenerateResult {
 	written: number;
 	edgeCount: number;
 	flows: RegenerateFlowResult[];
+	/** Flows that could not be composed (a timeline spec error), with the reason. */
+	flowErrors: { name: string; error: string }[];
 	/** Flow member paths listed in flows.json that no longer exist in the vault. */
 	missingCanvases: string[];
 	/**
@@ -96,41 +135,9 @@ interface LeafInfo {
 	edgeTags: string[];
 }
 
-type ParsedCanvas = { file: TFile; data: any; tags: string[] };
-
-function tagsFromData(data: any): string[] {
-	const tags = data?.metadata?.frontmatter?.tags;
-	if (Array.isArray(tags)) return tags.filter((t): t is string => typeof t === "string");
-	if (typeof tags === "string") return [tags];
-	return [];
-}
-
 function parentDirOf(path: string): string {
 	const i = path.lastIndexOf("/");
 	return i < 0 ? "" : path.slice(0, i);
-}
-
-/** Reads and parses every canvas under `tree` once (unparseable ones are skipped). */
-async function readTreeCanvases(app: App, tree: TFolder): Promise<Map<string, ParsedCanvas>> {
-	const parsed = new Map<string, ParsedCanvas>();
-	for (const f of collectCanvasFiles(tree)) {
-		let data: any;
-		try {
-			data = JSON.parse(await app.vault.read(f));
-		} catch {
-			continue;
-		}
-		parsed.set(f.path, { file: f, data, tags: tagsFromData(data) });
-	}
-	return parsed;
-}
-
-/** The first file node carrying a symbol subpath (a symbol canvas's identity). */
-function symbolFileNode(data: any): { file: string; subpath: string } | null {
-	const node = (Array.isArray(data?.nodes) ? data.nodes : []).find(
-		(n: any) => n?.type === "file" && typeof n.file === "string" && typeof n.subpath === "string",
-	);
-	return node ? { file: node.file, subpath: node.subpath } : null;
 }
 
 /** The first file node of any shape (a symbol-less canvas's whole-file node). */
@@ -216,12 +223,14 @@ function preserveTextNodes(existingData: any, data: { nodes: any[]; edges: any[]
 	}
 }
 
-/** The canvas file name a `<X>_codefile` dir's own canvas should have. */
+/**
+ * The canvas file name a `<X>_codefile` dir's own canvas should have — the
+ * dir's own name. (Only a fallback: `resolveOwnCanvas` prefers the dir's
+ * `codefile`-tagged canvas, which also covers trees from the old naming
+ * scheme's `<X>File_codefile/<X>_codefile.canvas` sibling-folder rule.)
+ */
 function codefileCanvasName(dirName: string): string {
-	const base = dirName.endsWith(`File${SUFFIX_CODEFILE}`)
-		? `${dirName.slice(0, -`File${SUFFIX_CODEFILE}`.length)}${SUFFIX_CODEFILE}`
-		: dirName;
-	return `${base}.canvas`;
+	return `${dirName}.canvas`;
 }
 
 /**
@@ -250,13 +259,24 @@ export async function regenerateFromMetadata(
 		if (dir instanceof TFolder) trees.set(treePath, dir);
 	}
 
-	const result: RegenerateResult = { trees: trees.size, written: 0, edgeCount: 0, flows: [], missingCanvases: [], orphanedFlowCanvases: [] };
+	const result: RegenerateResult = {
+		trees: trees.size,
+		written: 0,
+		edgeCount: 0,
+		flows: [],
+		flowErrors: [],
+		missingCanvases: [],
+		orphanedFlowCanvases: [],
+	};
 	for (const tree of trees.values()) {
 		const r = await regenerateTree(plugin, tree);
 		result.written += r.written;
 		result.edgeCount += r.edgeCount;
-		const f = await composeFlows(plugin, tree);
+		if (!tree.parent) continue;
+		await migrateLegacyFlagsIfNeeded(app, tree.parent.path, collectCanvasFiles(tree));
+		const f = await composeFlows(plugin, tree.parent);
 		result.flows.push(...f.flows);
+		result.flowErrors.push(...f.flowErrors);
 		result.missingCanvases.push(...f.missingCanvases);
 		result.orphanedFlowCanvases.push(...f.orphanedFlowCanvases);
 	}
@@ -489,50 +509,27 @@ async function regenerateTree(
 
 // ---------- flow composition (flows.json → main[-<name>].canvas) ----------
 
-/**
- * Composes every flow in the tree's flows.json (migrating legacy
- * `includeInMainFlowchart` tags on first run) into
- * `<flowcharts>/<flowCanvasFileName(name)>`. See the module doc for the edge
- * resolution rules.
- */
-async function composeFlows(
-	plugin: CodeFilesPlugin,
-	tree: TFolder,
-): Promise<{ flows: RegenerateFlowResult[]; missingCanvases: string[]; orphanedFlowCanvases: string[] }> {
-	const app = plugin.app;
-	const flowchartsFolder = tree.parent;
-	if (!flowchartsFolder) return { flows: [], missingCanvases: [], orphanedFlowCanvases: [] };
-	const nodeW = plugin.settings.canvasNodeWidth;
-	const nodeH = plugin.settings.canvasNodeHeight;
+export interface ComposeFlowsResult {
+	flows: RegenerateFlowResult[];
+	flowErrors: { name: string; error: string }[];
+	missingCanvases: string[];
+	orphanedFlowCanvases: string[];
+}
 
-	await migrateLegacyFlagsIfNeeded(app, flowchartsFolder.path, collectCanvasFiles(tree));
-	const flows = await readFlows(app, flowchartsFolder.path);
-	const names = Object.keys(flows).sort();
-
-	// Orphaned composed canvases: direct `main-*.canvas` children of the
-	// flowcharts folder whose flow name is no longer in flows.json (a flow
-	// was renamed or removed). Report-only — never deleted. `main.canvas`
-	// itself is the default flow's file and is never an orphan.
-	const expected = new Set(names.map((n) => flowCanvasFileName(n)));
-	const orphanedFlowCanvases = flowchartsFolder.children
-		.filter(
-			(c): c is TFile =>
-				c instanceof TFile &&
-				c.extension === "canvas" &&
-				c.name.startsWith("main-") &&
-				!expected.has(c.name),
-		)
-		.map((c) => c.path)
-		.sort();
-
-	if (names.length === 0) return { flows: [], missingCanvases: [], orphanedFlowCanvases };
-
-	// Fresh read — regenerateTree just rewrote the tree's canvases.
-	const parsed = await readTreeCanvases(app, tree);
-
-	// ---- structural coverage maps ----
-
+/** Structural coverage maps of one Subflowcharts tree, read off the directory layout. */
+interface TreeCoverage {
+	treePath: string;
 	/** `${file}${subpath}` → symbol canvas path (identity from the file node). */
+	symbolCanvasByIdentity: Map<string, string>;
+	/** code file path → its `<X>_codefile` canvas path. */
+	codefileCanvasByCodeFile: Map<string, string>;
+	/** code file path → the `<X>_codefile` dir holding its canvas. */
+	codefileDirByCodeFile: Map<string, string>;
+	/** dir path (incl. the tree root) → its `<Y>_subfolder` canvas path. */
+	subfolderCanvasByDir: Map<string, string>;
+}
+
+function treeCoverage(parsed: Map<string, ParsedCanvas>, tree: TFolder): TreeCoverage {
 	const symbolCanvasByIdentity = new Map<string, string>();
 	for (const [path, p] of parsed) {
 		if (!p.tags.includes(TAG_SYMBOL)) continue;
@@ -540,11 +537,8 @@ async function composeFlows(
 		if (node) symbolCanvasByIdentity.set(`${node.file}${node.subpath}`, path);
 	}
 	const rootName = tree.parent?.parent?.name || "root";
-	/** code file path → its `<X>_codefile` canvas path. */
 	const codefileCanvasByCodeFile = new Map<string, string>();
-	/** code file path → the `<X>_codefile` dir holding its canvas. */
 	const codefileDirByCodeFile = new Map<string, string>();
-	/** dir path (incl. the tree root) → its `<Y>_subfolder` canvas path. */
 	const subfolderCanvasByDir = new Map<string, string>();
 	const allDirs: TFolder[] = [];
 	walkDirs(tree, allDirs);
@@ -576,22 +570,185 @@ async function composeFlows(
 		tree.path,
 		resolveOwnCanvas(parsed, tree, `${rootName}${SUFFIX_SUBFOLDER}.canvas`, TAG_SUBFOLDER).path,
 	);
+	return { treePath: tree.path, symbolCanvasByIdentity, codefileCanvasByCodeFile, codefileDirByCodeFile, subfolderCanvasByDir };
+}
+
+/**
+ * Code references → this tree's canvases, for timeline flows built from
+ * sub-flowcharts (see `SubflowchartResolver`). Folder references map a code
+ * folder onto its mirrored `*_subfolder` dir via the codefile dirs below it.
+ */
+function subflowchartResolver(cov: TreeCoverage, parsed: Map<string, ParsedCanvas>): SubflowchartResolver {
+	const identityByCanvas = new Map<string, string>();
+	const identitiesByFile = new Map<string, string[]>();
+	for (const [identity, canvas] of cov.symbolCanvasByIdentity) {
+		identityByCanvas.set(canvas, identity);
+		const file = identity.slice(0, identity.indexOf("#"));
+		const list = identitiesByFile.get(file) ?? [];
+		list.push(identity);
+		identitiesByFile.set(file, list);
+	}
+	const filesByCodefileCanvas = new Map<string, string[]>();
+	for (const [file, canvas] of cov.codefileCanvasByCodeFile) {
+		const list = filesByCodefileCanvas.get(canvas) ?? [];
+		list.push(file);
+		filesByCodefileCanvas.set(canvas, list);
+	}
+	/** code folder → its mirrored `*_subfolder` dir ("" = the tree root). */
+	const mirroredByCodeDir = new Map<string, string>();
+	for (const [file, cfDir] of cov.codefileDirByCodeFile) {
+		let d = parentDirOf(file);
+		let m = parentDirOf(cfDir);
+		for (;;) {
+			if (mirroredByCodeDir.has(d)) break;
+			mirroredByCodeDir.set(d, m);
+			if (!d || m === cov.treePath || !m.startsWith(`${cov.treePath}/`)) break;
+			d = parentDirOf(d);
+			m = parentDirOf(m);
+		}
+	}
+	const subfolderCanvases = new Map<string, string>(); // canvas → its dir
+	for (const [dir, canvas] of cov.subfolderCanvasByDir) subfolderCanvases.set(canvas, dir);
+	return {
+		canvasFor(ref) {
+			const r = ref.replace(/\\/g, "/").replace(/\/+$/, "");
+			if (r.endsWith(".canvas")) return parsed.has(r) ? r : null;
+			if (r.includes("#")) {
+				return cov.symbolCanvasByIdentity.get(r) ?? cov.symbolCanvasByIdentity.get(r.replace(/#1$/, "")) ?? null;
+			}
+			const cf = cov.codefileCanvasByCodeFile.get(r);
+			if (cf) return cf;
+			const mirrored = mirroredByCodeDir.get(r === "/" ? "" : r);
+			return mirrored !== undefined ? cov.subfolderCanvasByDir.get(mirrored) ?? null : null;
+		},
+		identitiesOf(canvas) {
+			const own = identityByCanvas.get(canvas);
+			if (own) return [own];
+			const files = filesByCodefileCanvas.get(canvas);
+			if (files) return files.flatMap((f) => identitiesByFile.get(f) ?? []);
+			const dir = subfolderCanvases.get(canvas);
+			if (dir === undefined) return [];
+			const out: string[] = [];
+			for (const [file, cfDir] of cov.codefileDirByCodeFile) {
+				if (dir === cov.treePath || cfDir.startsWith(`${dir}/`)) out.push(...(identitiesByFile.get(file) ?? []));
+			}
+			return out;
+		},
+		isTreeCanvas(path) {
+			return parsed.has(path);
+		},
+	};
+}
+
+/**
+ * Composes the flows of one `…/flowcharts` folder's flows.json — all of
+ * them, or only `names` — into their canvases: list flows into
+ * `<flowcharts>/<flowCanvasFileName(name)>` (see the module doc for the edge
+ * resolution rules and shared-code links), timeline flows into their
+ * `output` (see flowchartTimeline.ts). The folder's `Subflowcharts` tree is
+ * read only when a flow needs it (list flows, timeline `code-links`), and at
+ * most once.
+ */
+export async function composeFlows(
+	plugin: CodeFilesPlugin,
+	flowchartsFolder: TFolder,
+	names?: string[],
+): Promise<ComposeFlowsResult> {
+	const app = plugin.app;
+	const nodeW = plugin.settings.canvasNodeWidth;
+	const nodeH = plugin.settings.canvasNodeHeight;
+	const manifest = await readFlowsManifest(app, flowchartsFolder.path);
+	const allNames = Object.keys(manifest.flows).sort();
+	const flowErrors: { name: string; error: string }[] = [];
+
+	// Orphaned composed canvases: direct `main-*.canvas` children of the
+	// flowcharts folder whose flow name is no longer in flows.json (a flow
+	// was renamed or removed). Report-only — never deleted. `main.canvas`
+	// itself is the default flow's file and is never an orphan.
+	const expected = new Set(allNames.map((n) => flowCanvasFileName(n)));
+	const orphanedFlowCanvases = flowchartsFolder.children
+		.filter(
+			(c): c is TFile =>
+				c instanceof TFile &&
+				c.extension === "canvas" &&
+				c.name.startsWith("main-") &&
+				!expected.has(c.name),
+		)
+		.map((c) => c.path)
+		.sort();
+
+	const selected = names ? allNames.filter((n) => names.includes(n)) : allNames;
+	for (const n of names ?? []) {
+		if (!(n in manifest.flows)) flowErrors.push({ name: n, error: `no flow "${n}" in ${flowchartsFolder.path}/flows.json` });
+	}
+	if (selected.length === 0) return { flows: [], flowErrors, missingCanvases: [], orphanedFlowCanvases };
+
+	const treeDir = app.vault.getAbstractFileByPath(normalizePath(`${flowchartsFolder.path}/Subflowcharts`));
+	const tree = treeDir instanceof TFolder ? treeDir : null;
+	// Read lazily, once — a fresh read: regenerateTree may just have rewritten the tree.
+	let parsed: Map<string, ParsedCanvas> | null = null;
+	let coverage: TreeCoverage | null = null;
+	let index: CodeIndex | null = null;
+	const getParsed = async (): Promise<Map<string, ParsedCanvas>> => {
+		if (!parsed) parsed = tree ? await readTreeCanvases(app, tree) : new Map();
+		return parsed;
+	};
+	const getCoverage = async (): Promise<TreeCoverage | null> => {
+		if (!tree) return null;
+		if (!coverage) coverage = treeCoverage(await getParsed(), tree);
+		return coverage;
+	};
+	const getIndex = async (): Promise<CodeIndex | null> => {
+		if (!tree) return null;
+		if (!index) index = buildCodeIndex(await getParsed());
+		return index;
+	};
+	const sides = parseCodeSides(plugin.settings.codeSides);
 
 	const results: RegenerateFlowResult[] = [];
 	const missing: string[] = [];
-	for (const name of names) {
+	for (const name of selected) {
+		const entry: Record<string, any> | string[] = manifest.flows[name];
+		const obj = (Array.isArray(entry) ? {} : entry) as Record<string, any>;
+
+		if (isTimelineFlow(entry)) {
+			const links = obj["code-links"];
+			const wantsIndex = links !== false && !(links && typeof links === "object" && links.mode === "off");
+			try {
+				const r = await composeTimelineFlow(app, name, obj, {
+					styles: manifest.styles,
+					defaultOutput: normalizePath(`${flowchartsFolder.path}/${flowCanvasFileName(name)}`),
+					manifestPath: normalizePath(`${flowchartsFolder.path}/flows.json`),
+					index: wantsIndex ? await getIndex() : null,
+					sides,
+					resolver: tree ? subflowchartResolver((await getCoverage())!, await getParsed()) : null,
+				});
+				results.push({ name, path: r.path, kind: "timeline", included: r.cards, edgeCount: r.edges, timeline: r });
+			} catch (e) {
+				if (!(e instanceof TimelineSpecError)) throw e;
+				flowErrors.push({ name, error: e.message });
+			}
+			continue;
+		}
+		if (!isListFlow(entry)) {
+			flowErrors.push({ name, error: `flow "${name}" is neither a list of canvases, {"members": […]} nor {"layout": "timeline"}` });
+			continue;
+		}
+
 		const members = new Set<string>();
-		for (const p of flows[name]) {
+		for (const p of flowMembers(entry)) {
 			const f = app.vault.getAbstractFileByPath(p);
 			if (f instanceof TFile && f.extension === "canvas") members.add(f.path);
 			else missing.push(p);
 		}
 		if (members.size === 0) continue;
+		const cov = await getCoverage();
+		const treeParsed = await getParsed();
 
 		// Member edge tags (members outside the tree are read on demand).
 		const tagsByMember = new Map<string, string[]>();
 		for (const m of members) {
-			const p = parsed.get(m);
+			const p = treeParsed.get(m);
 			if (p) {
 				tagsByMember.set(m, p.tags);
 			} else {
@@ -606,20 +763,21 @@ async function composeFlows(
 		 * canvas covering the file, else the nearest member ancestor subfolder
 		 * canvas. Null when no member covers it.
 		 */
-		const resolveMember = (fromCanvas: string, target: ExternalEdge): string | null => {
+		const resolveMember = (fromCanvas: string | null, target: ExternalEdge): string | null => {
+			if (!cov) return null;
 			if (target.subpath) {
-				const sym = symbolCanvasByIdentity.get(`${target.file}${target.subpath}`);
+				const sym = cov.symbolCanvasByIdentity.get(`${target.file}${target.subpath}`);
 				if (sym && sym !== fromCanvas && members.has(sym)) return sym;
 			}
-			const cf = codefileCanvasByCodeFile.get(target.file);
+			const cf = cov.codefileCanvasByCodeFile.get(target.file);
 			if (cf && cf !== fromCanvas && members.has(cf)) return cf;
-			let d = codefileDirByCodeFile.get(target.file);
+			let d = cov.codefileDirByCodeFile.get(target.file);
 			if (!d) return null;
 			d = parentDirOf(d);
 			while (d) {
-				const sub = subfolderCanvasByDir.get(d);
+				const sub = cov.subfolderCanvasByDir.get(d);
 				if (sub && sub !== fromCanvas && members.has(sub)) return sub;
-				if (d === tree.path) break;
+				if (d === cov.treePath) break;
 				const up = parentDirOf(d);
 				if (up === d) break;
 				d = up;
@@ -643,10 +801,106 @@ async function composeFlows(
 			}
 		}
 
+		let sharedEdgeCount: number | undefined;
+		if (obj["shared-links"] && cov) {
+			const flowSides = obj.sides ? parseCodeSides(obj.sides) : sides;
+			const shared = sharedMemberLinks([...members].sort(), tagsByMember, cov, treeParsed, resolveMember, flowSides, obj);
+			sharedEdgeCount = shared.length;
+			edges.push(...shared);
+		}
+
 		const path = normalizePath(`${flowchartsFolder.path}/${flowCanvasFileName(name)}`);
 		const data = buildCanvasData(specs, edges, plugin);
 		await writeCanvas(app, path, data); // no managed tags, no autoInclude
-		results.push({ name, path, included: members.size, edgeCount: data.edges.length });
+		results.push({ name, path, kind: "list", included: members.size, edgeCount: data.edges.length, sharedEdgeCount });
 	}
-	return { flows: results, missingCanvases: missing, orphanedFlowCanvases };
+	return { flows: results, flowErrors, missingCanvases: missing, orphanedFlowCanvases };
+}
+
+/**
+ * Shared-code links between list-flow members: one dotted, arrowless edge
+ * per pair of members on different code sides that both use (unlabelled
+ * code-level tags) symbols that no member covers and that live on neither
+ * side. Labelled `shares \`x\`` for one symbol, `shares \`x\`, \`y\` +N`
+ * otherwise. Options on the flow entry: `shared-ignore` (path globs),
+ * `shared-min` (fewest shared symbols for a pair to count, default 1),
+ * `shared-color`.
+ */
+function sharedMemberLinks(
+	members: string[],
+	tagsByMember: Map<string, string[]>,
+	cov: TreeCoverage,
+	parsed: Map<string, ParsedCanvas>,
+	resolveMember: (fromCanvas: string | null, target: ExternalEdge) => string | null,
+	sides: CodeSide[],
+	entry: Record<string, any>,
+): EdgeSpec[] {
+	const ignore = (Array.isArray(entry["shared-ignore"]) ? entry["shared-ignore"] : [])
+		.filter((g: unknown): g is string => typeof g === "string")
+		.map(globToRegExp);
+	const minShared = typeof entry["shared-min"] === "number" ? entry["shared-min"] : 1;
+
+	// The code files each member covers → its side (null when mixed or unknown).
+	const filesOf = (m: string): string[] => {
+		const sym = symbolFileNode(parsed.get(m)?.data);
+		if (sym && parsed.get(m)?.tags.includes(TAG_SYMBOL)) return [sym.file];
+		const dir = parentDirOf(m);
+		const out: string[] = [];
+		for (const [file, cfDir] of cov.codefileDirByCodeFile) {
+			if (cfDir === dir || cfDir.startsWith(`${dir}/`) || dir === cov.treePath) out.push(file);
+		}
+		return out;
+	};
+	const memberFiles = new Map(members.map((m) => [m, new Set(filesOf(m))]));
+	const memberSide = new Map<string, string | null>();
+	for (const m of members) {
+		const s = new Set([...memberFiles.get(m)!].map((f) => sideOf(f, sides)));
+		memberSide.set(m, s.size === 1 ? [...s][0] : null);
+	}
+
+	/** shared identity → members using it. */
+	const users = new Map<string, Set<string>>();
+	for (const m of members) {
+		const side = memberSide.get(m);
+		if (!side) continue;
+		for (const tag of tagsByMember.get(m) ?? []) {
+			const t = parseEdgeTag(tag);
+			if (!t || t.label || !t.subpath || t.file.endsWith(".canvas")) continue;
+			if (memberFiles.get(m)!.has(t.file)) continue; // its own code
+			if (resolveMember(null, t)) continue; // another member covers it: a direct edge, not shared
+			const tSide = sideOf(t.file, sides);
+			const isShared = sides.length > 0 ? tSide === null : tSide !== side;
+			if (!isShared || ignore.some((re: RegExp) => re.test(t.file))) continue;
+			const id = `${t.file}${t.subpath}`;
+			const set = users.get(id) ?? new Set<string>();
+			set.add(m);
+			users.set(id, set);
+		}
+	}
+	const pairs = new Map<string, { a: string; b: string; names: string[] }>();
+	for (const [id, set] of users) {
+		const list = [...set].sort();
+		for (let i = 0; i < list.length; i++) {
+			for (let j = i + 1; j < list.length; j++) {
+				if (memberSide.get(list[i]) === memberSide.get(list[j])) continue;
+				const key = `${list[i]}|${list[j]}`;
+				const p = pairs.get(key) ?? { a: list[i], b: list[j], names: [] };
+				p.names.push(symbolNameOf(id));
+				pairs.set(key, p);
+			}
+		}
+	}
+	const edges: EdgeSpec[] = [];
+	for (const p of [...pairs.values()].sort((x, y) => (x.a + x.b).localeCompare(y.a + y.b))) {
+		// Functions first (they say what is shared), then types/constants; alphabetical within each.
+		const fnFirst = (n: string) => (/^[a-z_]/.test(n) ? 0 : 1);
+		const names = [...new Set(p.names)].sort((x, y) => fnFirst(x) - fnFirst(y) || x.localeCompare(y));
+		if (names.length < minShared) continue;
+		const shown = names.slice(0, 2).map((n) => `\`${n}\``).join(", ");
+		const label = names.length > 2 ? `shares ${shown} +${names.length - 2}` : `shares ${shown}`;
+		const extra: Record<string, any> = { styleAttributes: { path: "dotted" }, toEnd: "none" };
+		if (typeof entry["shared-color"] === "string") extra.color = entry["shared-color"];
+		edges.push({ fromKey: `canvas:${p.a}`, toKey: `canvas:${p.b}`, label, extra });
+	}
+	return edges;
 }

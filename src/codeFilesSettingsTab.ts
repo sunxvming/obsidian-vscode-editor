@@ -2,7 +2,7 @@ import { App, PluginSettingTab, Setting } from "obsidian";
 import CodeFilesPlugin from "./main";
 import { SymbolKind } from "./symbolResolver";
 import { parseIgnorePatterns } from "./folderIgnore";
-import { normalizePointerDepth } from "./pointerFiles";
+import { DEFAULT_POINTER_FILE_NAME, normalizePointerDepth, normalizePointerFileName } from "./pointerFiles";
 import { t } from 'src/lang/helpers';
 
 
@@ -218,9 +218,11 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Pointer subfolder depth')
 			.setDesc(
-				'How many levels of subfolders "Generate pointers in subfolders" writes a `pointers.md` into. ' +
-				'1 = the command folder\'s immediate subfolders only (default); 2 = those plus their subfolders; and so on, ' +
-				'up to 16. Ignored folders (above) are skipped at every level and never descended into.',
+				'How many levels of subfolders "Generate pointers in subfolders" writes an index into (the command ' +
+				'folder itself always gets one for the files directly in it). 1 = immediate subfolders only (default); ' +
+				'2 = those plus their subfolders; and so on, up to 16. Each code file is listed in exactly one index — ' +
+				'its nearest indexed folder — so deeper indexes never repeat in their parents. Ignored folders (above) ' +
+				'are skipped at every level and never descended into.',
 			)
 			.addText(text => {
 				text.inputEl.type = "number";
@@ -234,6 +236,40 @@ export class CodeFilesSettingsTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					});
 			});
+
+		new Setting(containerEl)
+			.setName('Pointer file name')
+			.setDesc(
+				'File name of the indexes "Generate pointers in subfolders" writes. `{folder}` is replaced by the ' +
+				'folder\'s name (`src`, `tests` and other generic names get the parent\'s name in front: `region-src`), ' +
+				'so every index has its own name. Indexes left under an old name are moved to the trash on the next run.',
+			)
+			.addText(text => text
+				.setPlaceholder(DEFAULT_POINTER_FILE_NAME)
+				.setValue(this.plugin.settings.pointerFileName)
+				.onChange(async (value) => {
+					this.plugin.settings.pointerFileName = normalizePointerFileName(value);
+					await this.plugin.saveSettings();
+				}));
+
+		new Setting(containerEl)
+			.setName('Code sides')
+			.setDesc(
+				'Which deployable each code file belongs to, one side per line: `name: path/, other/path/`. ' +
+				'A file belongs to the side of its longest matching prefix; files on no side are shared code ' +
+				'(e.g. `crates/`), and the reserved side `shared:` marks shared code inside another side\'s tree. ' +
+				'Pointer files then mark every symbol linked into more than one side ("shared between server and ' +
+				'client"), label users from other sides, and list the shared code each side\'s symbols use ' +
+				'("uses shared"); flows can draw shared-code links. Empty = each file\'s first path segment is its side.',
+			)
+			.addTextArea(text => text
+				.setValue(this.plugin.settings.codeSides)
+				.setPlaceholder('server: server/\nclient: client/, online/\nshared: online/crates/protocol/')
+				.onChange(async (value) => {
+					this.plugin.settings.codeSides = value;
+					await this.plugin.saveSettings();
+				}))
+			.setClass("setting_ext");
 
 		containerEl.createEl('h2', { text: 'Flowcharts' });
 

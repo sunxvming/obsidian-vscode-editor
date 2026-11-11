@@ -21,19 +21,22 @@ import {
 	isGeneratedSubflowchartPath,
 	setTagFlag,
 } from "./flowchartCanvas";
-import { RegenerateResult, regenerateFromMetadata } from "./flowchartAggregate";
+import { ComposeFlowsResult, RegenerateResult, composeFlows as composeFlowsInFolder, regenerateFromMetadata } from "./flowchartAggregate";
 import {
 	PointerGranularity,
 	PointerResult,
+	discoverPointerRoots,
 	generatePointersInSubfolders,
 	normalizePointerDepth,
 	pointerTargetFolders,
+	scanVaultForPointers,
 } from "./pointerFiles";
 import {
 	FlowsValidation,
 	createFlow as createFlowManifest,
 	flowchartsFolderForPath,
 	readFlows,
+	readFlowsManifest,
 	sanitizeFlowName,
 	setFlowMembership,
 	validateFlows as validateFlowsManifest,
@@ -67,14 +70,16 @@ import { isIgnoredFolderPath, parseIgnorePatterns } from "./folderIgnore";
  *                   instead of the whole recursive scan (depth 0 = the
  *                   folder's own canvases only)
   *   any code folder ▸ "Generate pointers in subfolders" ▸ File granularity
-  *                 / Symbol granularity — writes one generated `pointers.md`
-  *                 into each eligible subfolder down to
-  *                 "Pointer subfolder depth" levels (file: one `## {file}`
-  *                 section per code file; symbol: one `## {file}#{symbol}`
-  *                 section per linkable symbol, overwriting the same file)
-  *                 with its consumer entries directly underneath; see
-  *                 pointerFiles.ts and pointerConsumers.ts), so docs can point
-  *                 at the generated file instead of hand-maintained file lists
+  *                 / Symbol granularity — writes one generated usage index
+  *                 (`settings.pointerFileName`, default `{folder}.usages.md`)
+  *                 into the folder and each eligible subfolder down to
+  *                 "Pointer subfolder depth" levels, every code file in
+  *                 exactly one of them (one `## {file}` section per file;
+  *                 symbol granularity lists every symbol as a `#name[#N]`
+  *                 bullet), with "used by" / "uses shared" entries
+  *                 underneath; stale generated indexes are trashed — see
+  *                 pointerFiles.ts and pointerConsumers.ts. Docs point at the
+  *                 generated files instead of hand-maintained file lists
  *
  * For a folder or multi-selection, if the aggregate-targeted canvases have
  * mixed include state, both "Include all" and "Exclude all" are offered
@@ -138,15 +143,26 @@ export interface FlowchartCommands {
 	/** Read-only flows.json health check — reports missing member canvases without composing. */
 	validateFlows(scope: TFolder | TFile[]): Promise<ValidateFlowsResult>;
 	/**
-	 * Writes a generated `pointers.md` into each immediate subfolder of
-	 * `folder` (or into `folder` itself when it has no subfolders),
-	 * overwriting whatever is there: file granularity writes one
-	 * `## {file}` section per in-folder code file, symbol granularity
-	 * writes one `## {file}#{symbol}` section per linkable symbol, both
-	 * with their consumer entries directly underneath. Re-run after file
-	 * renames instead of hand-maintaining per-doc file lists.
+	 * Composes the flows of one `…/flowcharts` folder's flows.json (all, or
+	 * only `names`) without rebuilding the aggregate tree: list flows into
+	 * `main[-<name>].canvas`, timeline flows into their `output` (see
+	 * flowchartTimeline.ts). Serialized like generate/regenerate.
+	 */
+	composeFlows(flowchartsFolder: TFolder | string, names?: string[]): Promise<ComposeFlowsResult | null>;
+	/**
+	 * Writes the generated usage indexes for `folder` (see pointerFiles.ts):
+	 * one for `folder` and one per eligible subfolder down to
+	 * `settings.pointerSubfolderDepth`, each code file in exactly one; stale
+	 * generated indexes under `folder` are trashed (`result.removed`).
+	 * Re-run after file renames instead of hand-maintaining file lists.
 	 */
 	generatePointers(folder: TFolder, extensions?: string[], granularity?: PointerGranularity): Promise<PointerResult | null>;
+	/**
+	 * Re-runs every pointer-generation root the existing indexes were written
+	 * from (read off their headers), sharing one vault scan. The one-click
+	 * "regenerate every root" step.
+	 */
+	regenerateAllPointers(): Promise<{ roots: { folder: string; granularity: PointerGranularity; result: PointerResult }[] } | null>;
 	/** True while a generate/regenerate job is running or queued (see runExclusive). */
 	isRunning(): boolean;
 	/** Resolves once no generate/regenerate job is running or queued. */
@@ -209,13 +225,11 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 					`(${result.nodeCount} nodes, ${result.edgeCount} edges) from ${result.fileCount} files. ` +
 					`Curate them with "Include in flow ▸", then run "Generate aggregate flowchart from subflowchart metadata".`,
 				);
-				if (result.renamedFiles.length > 0) {
+				if (result.movedFiles.length > 0) {
 					warnList(
-						`vscode-editor: ${result.renamedFiles.length} generated name(s) collided with a sibling ` +
-						`folder or another canvas and were renamed to stay unique (container/signature ` +
-						`qualifier or occurrence number on a declaration canvas, "File" on the file's ` +
-						`folder, " (kind)" on a basename match, "_" prefix otherwise)`,
-						result.renamedFiles,
+						`vscode-editor: ${result.movedFiles.length} canvas(es) changed name and were moved ` +
+						`(layout, include flags and flows.json entries kept)`,
+						result.movedFiles.map((m) => `${m.from} → ${m.to}`),
 						10000,
 					);
 				}
@@ -238,8 +252,8 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 				}
 				if (result.skipped.length > 0) {
 					warnList(
-						`vscode-editor: ${result.skipped.length} canvas(es) were skipped — their name still ` +
-						`collided after 5 "_" prefixes`,
+						`vscode-editor: ${result.skipped.length} canvas(es) were skipped — no free name was left ` +
+						`after the collision retries`,
 						result.skipped,
 						0,
 					);
@@ -263,6 +277,7 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 					);
 					return result;
 				}
+				reportFlowProblems(result.flows, result.flowErrors, warnList);
 				const flowEdges = result.flows.reduce((a, f) => a + f.edgeCount, 0);
 				new Notice(
 					`vscode-editor: regenerated ${result.written} aggregate flowchart(s) ` +
@@ -421,26 +436,83 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 			return result;
 		},
 
+		async composeFlows(flowchartsFolder, names) {
+			return runExclusive(async () => {
+				const folder =
+					typeof flowchartsFolder === "string"
+						? plugin.app.vault.getAbstractFileByPath(flowchartsFolder)
+						: flowchartsFolder;
+				if (!(folder instanceof TFolder)) {
+					new Notice(`vscode-editor: no folder ${String(flowchartsFolder)}.`);
+					return null;
+				}
+				const result = await composeFlowsInFolder(plugin, folder, names);
+				commands.lastResult = result;
+				refreshFlowsCache(folder.path);
+				reportComposed(result, warnList);
+				return result;
+			});
+		},
+
 		async generatePointers(folder, extensions, granularity = "file") {
 			return runExclusive(async () => {
 				const result = await generatePointersInSubfolders(plugin, folder, extensions, granularity);
 				commands.lastResult = result;
+				const files = result.targets.reduce((a, t) => a + t.fileCount, 0);
 				if (result.written.length === 0) {
-					new Notice("vscode-editor: no subfolders to write pointers into.");
+					new Notice(`vscode-editor: no code files under ${folder.path} to index.`);
 				} else if (granularity === "symbol") {
 					const symbols = result.targets.reduce((a, t) => a + (t.symbolCount ?? 0), 0);
 					const consumers = result.targets.reduce((a, t) => a + (t.consumerSymbolCount ?? t.consumerCount), 0);
 					new Notice(
-						`vscode-editor: wrote ${result.written.length} symbol pointer file(s) ` +
-						`(${symbols} symbol(s) indexed, ${consumers} consumer symbol link(s)). Re-run after renames — never hand-edit.`,
+						`vscode-editor: wrote ${result.written.length} symbol usage index(es) ` +
+						`(${symbols} symbols in ${files} files, used by ${consumers} outside symbol(s)). Re-run after renames — never hand-edit.`,
 					);
 				} else {
-					const files = result.targets.reduce((a, t) => a + t.fileCount, 0);
 					const consumers = result.targets.reduce((a, t) => a + t.consumerCount, 0);
 					new Notice(
-						`vscode-editor: wrote ${result.written.length} pointer file(s) ` +
-						`(${files} code files indexed, ${consumers} consumer link(s)). Re-run after renames — never hand-edit.`,
+						`vscode-editor: wrote ${result.written.length} usage index(es) ` +
+						`(${files} code files, ${consumers} outside user link(s)). Re-run after renames — never hand-edit.`,
 					);
+				}
+				if (result.removed.length > 0) {
+					warnList(
+						`vscode-editor: moved ${result.removed.length} stale generated index(es) to the trash ` +
+						`(old file name, or a folder no longer indexed)`,
+						result.removed,
+						10000,
+					);
+				}
+				return result;
+			});
+		},
+
+		async regenerateAllPointers() {
+			return runExclusive(async () => {
+				const roots = await discoverPointerRoots(plugin);
+				if (roots.length === 0) {
+					new Notice(
+						'vscode-editor: no generated pointer files found — run "Generate pointers in subfolders" on a folder first.',
+					);
+					commands.lastResult = { roots: [] };
+					return { roots: [] };
+				}
+				const scan = await scanVaultForPointers(plugin);
+				const out: { folder: string; granularity: PointerGranularity; result: PointerResult }[] = [];
+				for (const { folder, granularity } of roots) {
+					const result = await generatePointersInSubfolders(plugin, folder, undefined, granularity, scan);
+					out.push({ folder: folder.path, granularity, result });
+				}
+				const result = { roots: out };
+				commands.lastResult = result;
+				const written = out.reduce((a, r) => a + r.result.written.length, 0);
+				const removed = out.flatMap((r) => r.result.removed);
+				new Notice(
+					`vscode-editor: regenerated ${written} pointer file(s) from ${out.length} root(s): ` +
+						out.map((r) => `${r.folder} (${r.granularity})`).join(", "),
+				);
+				if (removed.length > 0) {
+					warnList(`vscode-editor: moved ${removed.length} stale generated index(es) to the trash`, removed, 10000);
 				}
 				return result;
 			});
@@ -468,8 +540,15 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 	plugin.registerEvent(
 		plugin.app.workspace.on("file-menu", (menu, file) => {
 			if (file instanceof TFolder) {
-				addFolderMenuItems(plugin, menu, file, commands);
-				addPointerMenuItem(plugin, menu, file, commands);
+				// One subtree walk for both code-folder menus.
+				const counts = countByExtension(
+					file,
+					plugin.settings.extensions,
+					plugin.settings.includeGeneratedCodeFiles,
+					parseIgnorePatterns(plugin.settings.ignoredFolders),
+				);
+				addFolderMenuItems(plugin, menu, file, commands, counts);
+				addPointerMenuItem(plugin, menu, file, commands, counts);
 				const canvases = collectCanvasFiles(file);
 				addFlowMenuItems(plugin, menu, canvases, flowsCache, commands);
 				addIncludeMenuItems(plugin, menu, canvases, aggregateSpec);
@@ -480,6 +559,9 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 			if (file instanceof TFile && file.extension === "canvas") {
 				addFlowMenuItems(plugin, menu, [file], flowsCache, commands);
 				addIncludeMenuItems(plugin, menu, [file], aggregateSpec);
+			}
+			if (file instanceof TFile && file.name === "flows.json" && file.parent?.name === "flowcharts") {
+				addComposeMenuItem(plugin, menu, file, commands);
 			}
 		}),
 	);
@@ -522,6 +604,15 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 		},
 	});
 	plugin.addCommand({
+		id: "compose-flow-from-flows-json",
+		name: "Compose flow from flows.json…",
+		callback: () => {
+			void listAllFlows(plugin.app).then((flows) =>
+				new FlowSuggestModal(plugin.app, flows, (f) => void commands.composeFlows(f.folder, [f.name])).open(),
+			);
+		},
+	});
+	plugin.addCommand({
 		id: "generate-pointers-in-subfolders",
 		name: "Generate pointers in subfolders…",
 		callback: () => {
@@ -529,6 +620,20 @@ export function setupFlowchartMenus(plugin: CodeFilesPlugin): FlowchartCommands 
 				void commands.generatePointers(folder),
 			).open();
 		},
+	});
+	plugin.addCommand({
+		id: "generate-symbol-pointers-in-subfolders",
+		name: "Generate pointers in subfolders (symbol granularity)…",
+		callback: () => {
+			new FolderSuggestModal(plugin.app, (folder) =>
+				void commands.generatePointers(folder, undefined, "symbol"),
+			).open();
+		},
+	});
+	plugin.addCommand({
+		id: "regenerate-all-pointer-files",
+		name: "Regenerate all pointer files",
+		callback: () => void commands.regenerateAllPointers(),
 	});
 
 	return commands;
@@ -541,13 +646,8 @@ function addFolderMenuItems(
 	menu: Menu,
 	folder: TFolder,
 	commands: FlowchartCommands,
+	counts: Map<string, number>,
 ): void {
-	const counts = countByExtension(
-		folder,
-		plugin.settings.extensions,
-		plugin.settings.includeGeneratedCodeFiles,
-		parseIgnorePatterns(plugin.settings.ignoredFolders),
-	);
 	if (counts.size === 0) return;
 	const total = [...counts.values()].reduce((a, b) => a + b, 0);
 
@@ -606,31 +706,26 @@ function addRegenerateMenuItem(
 }
 
 /**
- * Folder context-menu item behind the generated pointer files (see
+ * Folder context-menu item behind the generated usage indexes (see
  * pointerFiles.ts): "Generate pointers in subfolders" ▸ File granularity /
- * Symbol granularity — writes one `pointers.md` into each eligible subfolder
- * down to `settings.pointerSubfolderDepth` levels (default: immediate
- * subfolders only; file granularity: one `## {file}` section per code file;
- * symbol granularity: one `## {file}#{symbol}` section per linkable
- * symbol, overwriting the same file), indexing its code and annotated
- * vault-wide consumers. Offered on any folder that has eligible subfolders
- * (or code files, so it also works on a single leaf module folder).
- * Ignored folders are skipped at every level.
+ * Symbol granularity. The count suffix is the number of folders that may get
+ * an index (the folder itself plus eligible subfolders down to
+ * `settings.pointerSubfolderDepth`; folders without code files of their own
+ * are skipped at run time). Offered on any folder holding code files.
  */
 function addPointerMenuItem(
 	plugin: CodeFilesPlugin,
 	menu: Menu,
 	folder: TFolder,
 	commands: FlowchartCommands,
+	counts: Map<string, number>,
 ): void {
 	const includeGenerated = plugin.settings.includeGeneratedCodeFiles;
 	const ignoredFolders = parseIgnorePatterns(plugin.settings.ignoredFolders);
 	const depth = normalizePointerDepth(plugin.settings.pointerSubfolderDepth);
-	const targets = pointerTargetFolders(folder, includeGenerated, ignoredFolders, depth);
-	if (targets.length === 0) {
-		if (countByExtension(folder, plugin.settings.extensions, includeGenerated, ignoredFolders).size === 0) return;
-	}
-	const suffix = targets.length > 1 ? ` (${targets.length})` : "";
+	if (counts.size === 0) return;
+	const targets = pointerTargetFolders(folder, includeGenerated, ignoredFolders, depth).length + 1;
+	const suffix = targets > 1 ? ` (${targets})` : "";
 	menu.addItem((item) => {
 		item.setTitle(`Generate pointers in subfolders${suffix}`).setIcon("link");
 		withSubmenu(
@@ -924,6 +1019,128 @@ function withSubmenu(
 		fill(anyItem.setSubmenu());
 	} else {
 		flatFallback();
+	}
+}
+
+// ---------- flow composition menus ----------
+
+type WarnList = (message: string, paths: string[], timeout: number) => void;
+
+/** Short Notice + warnings for a composeFlows run. */
+function reportComposed(result: ComposeFlowsResult, warnList: WarnList): void {
+	const timeline = result.flows.filter((f) => f.kind === "timeline").length;
+	const list = result.flows.length - timeline;
+	new Notice(
+		`vscode-editor: composed ${result.flows.length} flow canvas(es)` +
+			(timeline > 0 ? ` (${timeline} timeline, ${list} list)` : "") +
+			`: ${result.flows.map((f) => f.path.split("/").pop()).join(", ") || "none"}.`,
+	);
+	reportFlowProblems(result.flows, result.flowErrors, warnList);
+	if (result.missingCanvases.length > 0) {
+		warnList(
+			`vscode-editor: ${result.missingCanvases.length} canvas(es) listed in flows.json no longer exist and were skipped`,
+			result.missingCanvases,
+			0,
+		);
+	}
+}
+
+/** Flow errors, timeline warnings, missing headings/files and code-link gaps, as warning Notices. */
+function reportFlowProblems(
+	flows: ComposeFlowsResult["flows"],
+	errors: ComposeFlowsResult["flowErrors"],
+	warnList: WarnList,
+): void {
+	for (const e of errors) warnList(`vscode-editor: flow "${e.name}" was not composed`, [e.error], 0);
+	for (const f of flows) {
+		const t = f.timeline;
+		if (!t) continue;
+		if (t.missingHeadings.length > 0) {
+			warnList(`vscode-editor: flow "${f.name}": ${t.missingHeadings.length} note card heading(s) are not in the doc`, t.missingHeadings, 0);
+		}
+		if (t.missingFiles.length > 0) {
+			warnList(`vscode-editor: flow "${f.name}": ${t.missingFiles.length} file(s) do not exist`, t.missingFiles, 0);
+		}
+		if (t.warnings.length > 0) warnList(`vscode-editor: flow "${f.name}": ${t.warnings.length} warning(s)`, t.warnings, 15000);
+		if (t.codeLinks && t.codeLinks.mode === "report" && t.codeLinks.missing.length > 0) {
+			warnList(
+				`vscode-editor: flow "${f.name}": the code links ${t.codeLinks.missing.length} card pair(s) the chart does not draw ` +
+					`(full list: lastResult.flows[…].timeline.codeLinks.missing)`,
+				t.codeLinks.missing.map((m) => `${m.from} -> ${m.to} (${m.kind} ${m.label})`),
+				15000,
+			);
+		}
+	}
+}
+
+interface FlowRef {
+	folder: string;
+	name: string;
+	kind: "list" | "timeline";
+}
+
+function flowKind(entry: unknown): "list" | "timeline" {
+	return entry && typeof entry === "object" && !Array.isArray(entry) && (entry as any).layout === "timeline" ? "timeline" : "list";
+}
+
+/** Every flow of one flows.json folder. */
+async function listFlowsIn(app: App, folder: string): Promise<FlowRef[]> {
+	const m = await readFlowsManifest(app, folder);
+	return Object.keys(m.flows)
+		.sort()
+		.map((name) => ({ folder, name, kind: flowKind(m.flows[name]) }));
+}
+
+/** Every flow of every flows.json in the vault. */
+async function listAllFlows(app: App): Promise<FlowRef[]> {
+	const out: FlowRef[] = [];
+	for (const manifest of collectFlowsManifests(app.vault.getRoot())) {
+		const folder = manifest.parent?.path;
+		if (folder != null) out.push(...(await listFlowsIn(app, folder)));
+	}
+	return out;
+}
+
+/** flows.json ▸ "Compose flows ▸ All flows / Pick a flow…" (no submenu support → flat "Compose all flows"). */
+function addComposeMenuItem(plugin: CodeFilesPlugin, menu: Menu, manifest: TFile, commands: FlowchartCommands): void {
+	const folder = manifest.parent;
+	if (!folder) return;
+	const pick = () =>
+		void listFlowsIn(plugin.app, folder.path).then((flows) =>
+			new FlowSuggestModal(plugin.app, flows, (f) => void commands.composeFlows(f.folder, [f.name])).open(),
+		);
+	menu.addItem((item) => {
+		item.setTitle("Compose flows").setIcon("git-fork");
+		withSubmenu(
+			item,
+			(sub) => {
+				sub.addItem((i) => i.setTitle("All flows").onClick(() => void commands.composeFlows(folder)));
+				sub.addItem((i) => i.setTitle("Pick a flow…").onClick(pick));
+			},
+			() => {
+				menu.addItem((flat) => flat.setTitle("Compose all flows").onClick(() => void commands.composeFlows(folder)));
+				menu.addItem((flat) => flat.setTitle("Compose a flow…").onClick(pick));
+			},
+		);
+	});
+}
+
+class FlowSuggestModal extends FuzzySuggestModal<FlowRef> {
+	constructor(app: App, private flows: FlowRef[], private onChoose: (flow: FlowRef) => void) {
+		super(app);
+		this.setPlaceholder("Pick a flow to compose");
+	}
+
+	getItems(): FlowRef[] {
+		return this.flows;
+	}
+
+	getItemText(f: FlowRef): string {
+		return `${f.name} (${f.kind}) - ${f.folder}/flows.json`;
+	}
+
+	onChooseItem(f: FlowRef): void {
+		this.onChoose(f);
 	}
 }
 

@@ -36,6 +36,18 @@ import { FlowchartFile, toSnakeCase } from "./flowchartModel";
  *   `use kg_hex::axial;` module import): the longest module prefix that names
  *   a scanned file, then the next segment as a symbol defined or re-exported
  *   there.
+ * - A method-call scan resolves `recv.method(…)` into another file by the
+ *   receiver's static type, inferred from what the code declares (`self` →
+ *   the owner's impl type, `self.f` → field `f`'s declared type, a local →
+ *   its last `let` / `if let Some(x) =` / `for x in` / parameter binding,
+ *   `X::new(…)` / `X { … }` → `X`, `a.m()` → `m`'s declared return type;
+ *   wrapper calls such as `bind`/`unwrap`/`as_ref` and wrapper types such as
+ *   `Option<Gd<KgNet>>` are seen through, a generic free helper takes its
+ *   first argument's type). Only an impl method of an inferred type links; an
+ *   unknown receiver links nothing, so std `insert`/`get` never land on an
+ *   in-repo method of that name. `Type::method(…)` links the method too (the
+ *   mention scan links only the type). A type the calling file defines
+ *   itself is never resolved to another file's same-named type.
  * - A `.db.<accessor>()` scan maps SpacetimeDB table handles to the struct
  *   whose `#[table(accessor = <name>, ...)]` matches. The receiver is any
  *   expression (`ctx.db`, `conn.db`, `link.conn.db`) and the chain may be
@@ -620,6 +632,154 @@ export async function detectCrossFileEdges(
 		return out;
 	};
 
+
+	// ---- method calls into other files (`recv.method(…)`, `Type::method(…)`) ----
+	// The mention scan skips `.name` (member access), so a call through an
+	// object — `self.runtime.take_reports()`, `net.bind().session().report_movement(…)`
+	// — produced no edge. These are resolved by the receiver's static type,
+	// inferred text-only from what the code declares: `self` is the owner's
+	// impl type, `self.f` the declared type of field `f`, a local the type of
+	// its `let`/`if let Some(x) =`/`for x in`/parameter binding (the last one
+	// before the use), `X::new(…)`/`X { … }` an `X`, a method call the declared
+	// return type of that method. Wrapper calls (`bind`, `unwrap`, `as_ref`, …)
+	// and wrapper types (`Option<Gd<KgNet>>` → `KgNet`) are seen through; a
+	// generic free helper (`live(&self.net)`) takes its first argument's type.
+	// Only a method whose impl type is in the inferred type set is linked — an
+	// unknown receiver yields no edge, so `HashMap::insert` never lands on an
+	// in-repo `insert`.
+	const typeNames = new Set<string>();
+	const structDefs = new Map<string, ImportTarget[]>();
+	for (const ff of rsFiles) {
+		for (const sym of ff.symbols) {
+			if (sym.kind === "struct" || sym.kind === "enum" || sym.kind === "class" || sym.kind === "interface") typeNames.add(sym.name);
+			if (sym.kind === "struct") pushTo(structDefs, sym.name, { ff, sym });
+		}
+	}
+	const lastSeg = (container: string | null): string | null => (container ? container.split(".").pop() ?? null : null);
+	/** method name → impl methods (functions whose container is a known type). */
+	const methodIndex = new Map<string, ImportTarget[]>();
+	/** free function name → top-level functions. */
+	const freeFns = new Map<string, ImportTarget[]>();
+	for (const ff of rsFiles) {
+		for (const sym of ff.symbols) {
+			if (sym.kind !== "function") continue;
+			const t = lastSeg(sym.container);
+			if (t && typeNames.has(t)) pushTo(methodIndex, sym.name, { ff, sym });
+			else if (!sym.container) pushTo(freeFns, sym.name, { ff, sym });
+		}
+	}
+	/** Known type names in a type or signature text (`Self` → `self`). */
+	const typeIdents = (text: string, self: string | null): Set<string> => {
+		const out = new Set<string>();
+		for (const m of text.match(/\b[A-Z]\w*\b/g) ?? []) {
+			if (m === "Self") {
+				if (self) out.add(self);
+			} else if (typeNames.has(m)) out.add(m);
+		}
+		return out;
+	};
+	const fieldCache = new Map<string, Map<string, string>>();
+	/** `struct T { f: Ty, … }` → field → type text (every struct named T merged). */
+	const fieldsOf = (type: string): Map<string, string> => {
+		let fields = fieldCache.get(type);
+		if (fields) return fields;
+		fields = new Map();
+		for (const { ff, sym } of structDefs.get(type) ?? []) {
+			const lines = linesByFile.get(ff)!;
+			for (let row = sym.startLine; row < sym.endLine && row < lines.length; row++) {
+				const line = lines[row].replace(/\/\/.*$/, "");
+				const m = /^\s*(?:pub(?:\s*\([^)]*\))?\s+)?(\w+)\s*:\s*(.+?)\s*,?\s*$/.exec(line);
+				if (m && !fields.has(m[1])) fields.set(m[1], m[2]);
+			}
+		}
+		fieldCache.set(type, fields);
+		return fields;
+	};
+	const signatureOf = ({ ff, sym }: ImportTarget): string => {
+		const lines = linesByFile.get(ff)!;
+		const out: string[] = [];
+		for (let row = sym.startLine - 1; row < sym.endLine && row < lines.length; row++) {
+			const line = lines[row].replace(/\/\/.*$/, "");
+			if (/^\s*#/.test(line)) continue;
+			const brace = line.indexOf("{");
+			out.push(brace >= 0 ? line.slice(0, brace) : line);
+			if (brace >= 0 || /;\s*$/.test(line)) break;
+		}
+		return out.join(" ");
+	};
+	/** Known types a function returns (`-> &NetSession` → NetSession; none → empty). */
+	const returnTypesOf = (target: ImportTarget, self: string | null): Set<string> => {
+		const m = /->\s*(.+?)\s*(?:\bwhere\b|$)/.exec(signatureOf(target));
+		return m ? typeIdents(m[1], self) : new Set();
+	};
+	/** Method calls that keep the receiver's type (wrappers and borrows). */
+	const TRANSPARENT = new Set([
+		"as_ref", "as_mut", "as_deref", "as_deref_mut", "unwrap", "expect", "unwrap_or_default", "bind", "bind_mut",
+		"borrow", "borrow_mut", "lock", "read", "write", "clone", "cloned", "copied", "to_owned", "deref", "deref_mut",
+		"iter", "iter_mut", "into_iter", "values", "values_mut", "ok", "get", "get_mut", "first", "last", "take",
+	]);
+	/** Splits an expression into top-level `.` segments (parens/brackets/braces kept whole). */
+	const chainSegments = (expr: string): string[] => {
+		const out: string[] = [];
+		let depth = 0;
+		let cur = "";
+		for (const ch of expr) {
+			if (ch === "(" || ch === "[" || ch === "{") depth++;
+			else if (ch === ")" || ch === "]" || ch === "}") depth--;
+			if (ch === "." && depth === 0) {
+				out.push(cur.trim());
+				cur = "";
+			} else cur += ch;
+		}
+		out.push(cur.trim());
+		return out.filter((s) => s.length > 0);
+	};
+	/** The expression just before the `.` at `dot` (`self.runtime`, `net.bind().session()`). */
+	const receiverBefore = (text: string, dot: number): string => {
+		let i = dot - 1;
+		const skipWs = () => {
+			while (i >= 0 && /\s/.test(text[i])) i--;
+		};
+		skipWs();
+		const end = i + 1;
+		for (;;) {
+			if (text[i] === "?") i--;
+			if (text[i] === ")" || text[i] === "]") {
+				const close = text[i];
+				const open = close === ")" ? "(" : "[";
+				let depth = 0;
+				for (; i >= 0; i--) {
+					if (text[i] === close) depth++;
+					else if (text[i] === open && --depth === 0) break;
+				}
+				i--;
+			}
+			while (i >= 0 && /[\w:]/.test(text[i])) i--;
+			const save = i;
+			skipWs();
+			if (text[i] === ".") {
+				i--;
+				skipWs();
+				continue;
+			}
+			i = save;
+			break;
+		}
+		return text.slice(i + 1, end).trim();
+	};
+	/** The expression after `=` at `from`, up to `;` / `{` / ` else ` at depth 0. */
+	const exprFrom = (text: string, from: number): string => {
+		let depth = 0;
+		for (let i = from; i < text.length; i++) {
+			const ch = text[i];
+			if (ch === "(" || ch === "[") depth++;
+			else if (ch === ")" || ch === "]") depth--;
+			else if (depth === 0 && (ch === ";" || ch === "{")) return text.slice(from, i);
+			else if (depth === 0 && text.startsWith(" else", i)) return text.slice(from, i);
+		}
+		return text.slice(from);
+	};
+
 	for (const ff of rsFiles) {
 		const lines = linesByFile.get(ff)!;
 		const selfMod = selfModOf(ff);
@@ -776,6 +936,155 @@ export async function detectCrossFileEdges(
 					break;
 				}
 			}
+		}
+
+		// Method calls into other files, typed by the receiver (see the index above).
+		const ownerTexts = new Map<string, { text: string; base: number; sigEnd: number }>();
+		const ownerTextOf = (owner: SymbolInfo) => {
+			const key = `${owner.name}#${owner.occurrence}`;
+			let t = ownerTexts.get(key);
+			if (!t) {
+				const text = codeLines.slice(owner.startLine - 1, owner.endLine).join("\n");
+				const brace = text.indexOf("{");
+				t = { text, base: starts[owner.startLine - 1] ?? 0, sigEnd: brace < 0 ? text.length : brace };
+				ownerTexts.set(key, t);
+			}
+			return t;
+		};
+		type TypeCtx = { text: string; sigEnd: number; self: string | null; before: number };
+		const typeOf = (expr: string, ctx: TypeCtx, depth: number): Set<string> => {
+			const none = new Set<string>();
+			if (depth > 6) return none;
+			const e = expr.trim().replace(/^(?:&\s*(?:mut\s+)?|\*|mut\s+)+/, "").replace(/\?+$/, "").trim();
+			const segs = chainSegments(e);
+			if (segs.length === 0) return none;
+			let cur = headType(segs[0], ctx, depth);
+			for (const seg of segs.slice(1)) {
+				if (cur.size === 0) return cur;
+				const call = /^(\w+)\s*(?:::\s*<[^>]*>)?\s*\(/.exec(seg);
+				const next = new Set<string>();
+				if (call) {
+					if (TRANSPARENT.has(call[1])) continue;
+					for (const t of cur) {
+						for (const c of methodIndex.get(call[1]) ?? []) {
+							if (lastSeg(c.sym.container) === t) for (const r of returnTypesOf(c, t)) next.add(r);
+						}
+					}
+				} else if (/^\w+$/.test(seg)) {
+					for (const t of cur) for (const r of typeIdents(fieldsOf(t).get(seg) ?? "", t)) next.add(r);
+				} else return none;
+				cur = next;
+			}
+			return cur;
+		};
+		const headType = (head: string, ctx: TypeCtx, depth: number): Set<string> => {
+			const h = head.trim();
+			if (h === "self") return new Set(ctx.self ? [ctx.self] : []);
+			if (/^\([\s\S]*\)$/.test(h)) return typeOf(h.slice(1, -1), ctx, depth + 1);
+			const call = /^((?:\w+\s*::\s*)*)(\w+)\s*(?:::\s*<[^>]*>)?\s*\(([\s\S]*)\)$/.exec(h);
+			if (call) {
+				const path = call[1].split("::").map((s) => s.trim()).filter((s) => s.length > 0);
+				const fn = call[2];
+				if (path.length > 0) {
+					const t = path[path.length - 1] === "Self" ? ctx.self : path[path.length - 1];
+					if (!t || !typeNames.has(t)) return new Set();
+					const rets = new Set<string>();
+					for (const c of methodIndex.get(fn) ?? []) {
+						if (lastSeg(c.sym.container) === t) for (const r of returnTypesOf(c, t)) rets.add(r);
+					}
+					return rets.size > 0 ? rets : new Set([t]); // constructors: `X::new(…)` is an X
+				}
+				if (typeNames.has(fn)) return new Set([fn]); // tuple-struct literal
+				const cands = freeFns.get(fn) ?? [];
+				const pick = cands.filter((c) => c.ff === ff).length > 0 ? cands.filter((c) => c.ff === ff) : cands;
+				const rets = new Set<string>();
+				for (const c of pick) for (const r of returnTypesOf(c, null)) rets.add(r);
+				if (rets.size > 0) return rets;
+				// A generic helper (`live(&self.net)`): its first argument's type.
+				const first = chainSegments(call[3]).length > 0 ? call[3].split(",")[0] : "";
+				return first ? typeOf(first, ctx, depth + 1) : new Set();
+			}
+			const lit = /^(\w+)\s*\{/.exec(h);
+			if (lit && typeNames.has(lit[1])) return new Set([lit[1]]);
+			if (/^\w+$/.test(h)) return typeNames.has(h) ? new Set([h]) : localType(h, ctx, depth);
+			return new Set();
+		};
+		/** The type of local `name` from its last binding before `ctx.before`. */
+		const localType = (name: string, ctx: TypeCtx, depth: number): Set<string> => {
+			const text = ctx.text;
+			let best: { pos: number; eval: () => Set<string> } | null = null;
+			const consider = (pos: number, ev: () => Set<string>) => {
+				if (pos < ctx.before && (!best || pos > best.pos)) best = { pos, eval: ev };
+			};
+			const reLet = new RegExp(`\\blet\\s+(?:mut\\s+)?${name}\\s*(?::\\s*([^=;]+?))?\\s*=(?!=)`, "g");
+			const rePat = new RegExp(`\\b(?:Some|Ok|Err)\\s*\\(\\s*(?:ref\\s+)?(?:mut\\s+)?${name}\\s*\\)\\s*=(?!=)`, "g");
+			const reFor = new RegExp(`\\bfor\\s+(?:mut\\s+)?${name}\\s+in\\b`, "g");
+			let m: RegExpExecArray | null;
+			while ((m = reLet.exec(text)) !== null) {
+				const at = m.index;
+				const annotated = m[1];
+				const rhs = at + m[0].length;
+				consider(at, () =>
+					annotated ? typeIdents(annotated, ctx.self) : typeOf(exprFrom(text, rhs), { ...ctx, before: at }, depth + 1),
+				);
+			}
+			while ((m = rePat.exec(text)) !== null) {
+				const at = m.index;
+				const rhs = at + m[0].length;
+				consider(at, () => typeOf(exprFrom(text, rhs), { ...ctx, before: at }, depth + 1));
+			}
+			while ((m = reFor.exec(text)) !== null) {
+				const at = m.index;
+				const rhs = at + m[0].length;
+				consider(at, () => typeOf(exprFrom(text, rhs), { ...ctx, before: at }, depth + 1));
+			}
+			// Parameters (the signature, before the body's `{`).
+			const param = new RegExp(`\\b${name}\\s*:\\s*([^,)]+)`).exec(text.slice(0, ctx.sigEnd));
+			if (param) consider(0, () => typeIdents(param[1], ctx.self));
+			const chosen = best as { pos: number; eval: () => Set<string> } | null;
+			return chosen ? chosen.eval() : new Set();
+		};
+		/** Narrows same-named types in several crates to the one this file can see. */
+		const localTypes = new Set(ff.symbols.filter((s) => s.kind !== "function" && s.kind !== "variable").map((s) => s.name));
+		const visibleCandidates = (cands: ImportTarget[], type: string): ImportTarget[] => {
+			// A type this file defines is this file's (two test files may each define a `Harness`).
+			if (localTypes.has(type)) return [];
+			const ofType = cands.filter((c) => c.ff !== ff && lastSeg(c.sym.container) === type);
+			if (ofType.length <= 1) return ofType;
+			const imp = imported.get(type);
+			const keys = new Set(imp ? crateKeysOf(imp[0].ff) : crateKeysOf(ff));
+			const near = ofType.filter((c) => crateKeysOf(c.ff).some((k) => keys.has(k)));
+			if (near.length > 0) return near;
+			const crates = new Set(ofType.map((c) => crateKeysOf(c.ff).join("|")));
+			return crates.size === 1 ? ofType : [];
+		};
+		const reMethodCall = /\.\s*(\w+)\s*(?:::\s*<[^>]*>\s*)?\(/g;
+		let mc: RegExpExecArray | null;
+		while ((mc = reMethodCall.exec(code)) !== null) {
+			const cands = methodIndex.get(mc[1]);
+			if (!cands || cands.every((c) => c.ff === ff)) continue;
+			const owner = ownerAt(rowAt(starts, mc.index) + 1);
+			if (!owner) continue;
+			const recv = receiverBefore(code, mc.index);
+			if (!recv || /(?:^|\.)\s*(?:db|reducers)$/.test(recv)) continue; // SpacetimeDB handles: the table scans' business
+			const ot = ownerTextOf(owner);
+			const selfType = lastSeg(owner.container);
+			const types = typeOf(
+				recv,
+				{ text: ot.text, sigEnd: ot.sigEnd, self: selfType && typeNames.has(selfType) ? selfType : null, before: mc.index - ot.base },
+				0,
+			);
+			for (const t of types) for (const c of visibleCandidates(cands, t)) pushEdge(owner, c);
+		}
+		// `Type::method(…)` into another file: the mention scan links the type, this links the method.
+		const reAssoc = /(?<![\w:])([A-Z]\w*)\s*::\s*(\w+)\s*(?:::\s*<[^>]*>\s*)?\(/g;
+		while ((mc = reAssoc.exec(code)) !== null) {
+			if (!typeNames.has(mc[1])) continue;
+			const cands = methodIndex.get(mc[2]);
+			if (!cands) continue;
+			const owner = ownerAt(rowAt(starts, mc.index) + 1);
+			if (!owner) continue;
+			for (const c of visibleCandidates(cands, mc[1])) pushEdge(owner, c);
 		}
 
 		// An included file calls back into the files that include it (module

@@ -1,13 +1,15 @@
-import { TFile, TFolder } from "obsidian";
+import { TFile } from "obsidian";
 import { FlowchartModel, toSnakeCase } from "./flowchartModel";
 import { SymbolInfo } from "./symbolResolver";
 
 /**
- * Consumer collection for the generated pointer files (see pointerFiles.ts).
- * Pure read-only logic over a vault-rooted FlowchartModel: for a target
- * folder, find every code file OUTSIDE the folder whose detected edges land
- * on a file INSIDE it, and phrase each hit as a `PointerUsage`
- * (consumer -> target, with a verb and the symbol/accessor involved).
+ * Usage collection for the generated pointer files (see pointerFiles.ts).
+ * Pure read-only logic over a vault-rooted FlowchartModel: every detected
+ * reference from one code file to another, phrased as a `PointerUsage`
+ * (consumer -> target, with a verb and the symbol/accessor involved). The
+ * whole vault is collected in ONE pass (`collectVaultUsages`); each pointer
+ * file then keeps the usages that cross its own boundary (`usagesInto`,
+ * `usagesOutOf`).
  *
  * Edge sources (all built by buildFlowchartModel):
  * - `crossDetectedEdges` — Rust cross-file mentions (`uses`), module-side
@@ -17,48 +19,37 @@ import { SymbolInfo } from "./symbolResolver";
  *   (`subscribes to`).
  * - `detectedEdges` — C# `Reducers.X(...)` (`calls reducer`, resolved through
  *   `reducerIndex`) and `.Db.X` reads (`reads table`, via `accessorIndex`).
- *   Bare-name AutoEdges are same-file only and never cross the folder
- *   boundary, so they are skipped.
+ *   Bare-name AutoEdges are same-file only and are skipped.
  * - `fileEdges` — `.tscn` wiring: attached scripts, instanced scenes, and
  *   `TableName` binds.
  * - `importEdges` — module-level `use` (`imports`), `mod x;` (`declares
- *   module`) and `include!` splices (`includes`), as a fallback.
+ *   module`) and `include!` splices (`includes`), as a fallback: dropped
+ *   where the same file already uses the same target symbol for real.
  *
  * Scenes get one hop of transitivity: a `.tscn` that attaches a script also
- * inherits that script's folder-targeting usages, marked `via` the script —
- * this is what lets `local_player.tscn` show "calls reducers
- * `report_movement` ... (via PositionSyncComponent.cs)". The script keeps its
- * own direct entry as well.
+ * inherits that script's usages, marked `via` the script — this is what lets
+ * `local_player.tscn` show "calls reducers `report_movement` ... (via
+ * PositionSyncComponent.cs)". The script keeps its own direct entry as well.
+ * A file's references to itself are never usages.
  */
 
 export interface PointerUsage {
-	/** The outside file that uses the folder's code. */
+	/** The file that uses the target's code. */
 	consumer: TFile;
-	/** The owning symbol inside the consumer file; null = whole-file usage (`.tscn` wiring, scenes). */
+	/** The owning symbol inside the consumer file; null = whole-file usage (`.tscn` wiring, imports). */
 	consumerSym: SymbolInfo | null;
-	/** The file inside the target folder being used. */
+	/** The file being used. */
 	target: TFile;
 	/** The targeted symbol inside the target file; null = whole-file target (scene/instance edges, symbol-less files). */
 	targetSym: SymbolInfo | null;
-	/** `calls reducer` / `reads table` / `reads` / `writes` / `subscribes to` / `registers callbacks on` / `uses` / `binds` / `attaches script` / `instances scene` / `includes`. */
+	/** `calls reducer` / `reads table` / `reads` / `writes` / `subscribes to` / `registers callbacks on` / `uses` / `binds` / `attaches script` / `instances scene` / `instantiates class` / `imports` / `declares module` / `includes`. */
 	verb: string;
 	/** The reducer fn, accessor, or symbol name involved. */
 	name: string;
 	/** Set when the usage is inherited from a scene's attached script. */
 	via?: TFile;
-	/** The script-side symbol the inherited scene usage flows through (symbol granularity only). */
+	/** The script-side symbol the inherited scene usage flows through. */
 	viaSym?: SymbolInfo | null;
-}
-
-/** Nested indexes over a usage list: by target file then consumer, and vice versa. */
-export interface PointerUsageIndex {
-	byTarget: Map<string, Map<string, PointerUsage[]>>;
-	byConsumer: Map<string, Map<string, PointerUsage[]>>;
-}
-
-function isUnder(file: TFile, folder: TFolder): boolean {
-	if (folder.path === "/") return true;
-	return file.path === folder.path || file.path.startsWith(`${folder.path}/`);
 }
 
 /** Resolve an edge owner name (+optional occurrence) to its SymbolInfo in the consumer file. */
@@ -84,85 +75,87 @@ function moduleNameOf(file: TFile): string {
 	return file.basename === "mod" ? file.parent?.name ?? file.basename : file.basename;
 }
 
-export function collectPointerUsage(model: FlowchartModel, target: TFolder): PointerUsage[] {
-	const inTarget = (f: TFile) => isUnder(f, target) && f.path !== target.path;
+/** Identity key for a symbol (`name#occurrence`, "" for whole-file). */
+export function symbolKey(s: SymbolInfo | null | undefined): string {
+	return s ? `${s.name}#${s.occurrence}` : "";
+}
+
+/** Every cross-file usage in the model (see the module doc). */
+export function collectVaultUsages(model: FlowchartModel): PointerUsage[] {
 	const byPath = new Map(model.files.map((ff) => [ff.file.path, ff]));
 
-	// Direct usages, grouped by consumer path so the scene pass can look up a
-	// script's own usages without rescanning.
+	/** Direct usages grouped by consumer path, for the scene pass. */
 	const direct = new Map<string, PointerUsage[]>();
-	/** Import-only usages, applied at the end when no deeper usage covers them. */
 	const pendingImports: PointerUsage[] = [];
 	const seen = new Set<string>();
-	const symKey = (s: SymbolInfo | null | undefined): string =>
-		s ? `${s.name}#${s.occurrence}` : "";
-	const push = (u: PointerUsage, into?: Map<string, PointerUsage[]>) => {
-		// Symbol identities are part of the key so two owners using the same
-		// target name stay distinct for symbol granularity; file-level
-		// rendering re-groups by verb+name and is unaffected.
-		const key =
-			`${u.consumer.path}|${symKey(u.consumerSym)}|${u.target.path}|${symKey(u.targetSym)}|` +
-			`${u.verb}|${u.name}|${u.via?.path ?? ""}|${symKey(u.viaSym)}`;
+	const keyOf = (u: PointerUsage) =>
+		`${u.consumer.path}|${symbolKey(u.consumerSym)}|${u.target.path}|${symbolKey(u.targetSym)}|` +
+		`${u.verb}|${u.name}|${u.via?.path ?? ""}|${symbolKey(u.viaSym)}`;
+	const out: PointerUsage[] = [];
+	const push = (u: PointerUsage, isDirect: boolean) => {
+		if (u.consumer.path === u.target.path) return;
+		const key = keyOf(u);
 		if (seen.has(key)) return;
 		seen.add(key);
-		const list = into ?? direct;
-		const group = list.get(u.consumer.path) ?? [];
+		out.push(u);
+		if (!isDirect) return;
+		const group = direct.get(u.consumer.path) ?? [];
 		group.push(u);
-		list.set(u.consumer.path, group);
+		direct.set(u.consumer.path, group);
 	};
 
 	for (const ff of model.files) {
-		if (inTarget(ff.file)) continue;
-
 		for (const e of ff.crossDetectedEdges) {
-			if (!inTarget(e.toFile)) continue;
-			const verb = (e.label && CROSS_EDGE_VERBS[e.label]) || "uses";
-			push({
-				consumer: ff.file,
-				consumerSym: findOwnerSymbol(ff.symbols, e.from, e.fromOccurrence),
-				target: e.toFile,
-				targetSym: e.toSym,
-				verb,
-				name: e.toSym.name,
-			});
+			push(
+				{
+					consumer: ff.file,
+					consumerSym: findOwnerSymbol(ff.symbols, e.from, e.fromOccurrence),
+					target: e.toFile,
+					targetSym: e.toSym,
+					verb: (e.label && CROSS_EDGE_VERBS[e.label]) || "uses",
+					name: e.toSym.name,
+				},
+				true,
+			);
 		}
 
 		for (const e of ff.detectedEdges) {
 			if (e.to.startsWith("reducer:")) {
-				const name = e.to.slice("reducer:".length);
-				const t = model.reducerIndex.get(name);
-				if (t && inTarget(t.file)) {
-					const targetFf = byPath.get(t.file.path);
-					const targetSym =
-						targetFf?.symbols.find((s) => s.kind === "function" && s.name === t.fnName) ?? null;
-					push({
+				const t = model.reducerIndex.get(e.to.slice("reducer:".length));
+				if (!t) continue;
+				const targetSym =
+					byPath.get(t.file.path)?.symbols.find((s) => s.kind === "function" && s.name === t.fnName) ?? null;
+				push(
+					{
 						consumer: ff.file,
 						consumerSym: findOwnerSymbol(ff.symbols, e.from, e.fromOccurrence),
 						target: t.file,
 						targetSym,
 						verb: "calls reducer",
 						name: t.fnName,
-					});
-				}
+					},
+					true,
+				);
 			} else if (e.to.startsWith("table:")) {
 				const name = toSnakeCase(e.to.slice("table:".length));
 				const t = model.accessorIndex.get(name);
-				if (t && inTarget(t.ff.file)) {
-					push({
+				if (!t) continue;
+				push(
+					{
 						consumer: ff.file,
 						consumerSym: findOwnerSymbol(ff.symbols, e.from, e.fromOccurrence),
 						target: t.ff.file,
 						targetSym: t.sym,
 						verb: "reads table",
 						name,
-					});
-				}
+					},
+					true,
+				);
 			}
-			// Bare-name AutoEdges are same-file calls - never cross-folder.
+			// Bare-name AutoEdges are same-file calls - never cross-file.
 		}
 
 		for (const e of ff.fileEdges) {
-			if (!inTarget(e.toFile)) continue;
 			const verb =
 				e.label === "script"
 					? "attaches script"
@@ -171,22 +164,23 @@ export function collectPointerUsage(model: FlowchartModel, target: TFolder): Poi
 						: e.label === "class"
 							? "instantiates class"
 							: "binds";
-			push({
-				consumer: ff.file,
-				consumerSym: null,
-				target: e.toFile,
-				targetSym: e.toSym,
-				verb,
-				name: e.toSym?.name ?? e.toFile.basename,
-			});
+			push(
+				{
+					consumer: ff.file,
+					consumerSym: null,
+					target: e.toFile,
+					targetSym: e.toSym,
+					verb,
+					name: e.toSym?.name ?? e.toFile.basename,
+				},
+				true,
+			);
 		}
 
-		// Module-level `use`/`pub use` of another file's symbol, `mod x;`
-		// declarations and `include!` splices (whole-file references, no owning
-		// symbol). Kept aside: a file that also mentions the symbol inside a
-		// declaration should read as one usage, not two.
+		// Module-level `use`/`pub use`, `mod x;` and `include!` (whole-file
+		// references, no owning symbol). Kept aside: a file that also
+		// mentions the symbol inside a declaration should read as one usage.
 		for (const e of ff.importEdges) {
-			if (!inTarget(e.toFile)) continue;
 			const isModuleDecl = e.label === "declare module";
 			pendingImports.push({
 				consumer: ff.file,
@@ -199,28 +193,20 @@ export function collectPointerUsage(model: FlowchartModel, target: TFolder): Poi
 		}
 	}
 
-	// Drop the import fallback where the same file already uses the same target
-	// symbol for real (that deeper usage is the more useful entry).
+	// The import fallback only where the same file has no deeper usage of the
+	// same target symbol.
 	const covered = new Set<string>();
-	for (const list of direct.values()) {
-		for (const u of list) covered.add(`${u.consumer.path}|${u.target.path}|${symKey(u.targetSym)}`);
-	}
+	for (const u of out) covered.add(`${u.consumer.path}|${u.target.path}|${symbolKey(u.targetSym)}`);
 	for (const u of pendingImports) {
-		if (covered.has(`${u.consumer.path}|${u.target.path}|${symKey(u.targetSym)}`)) continue;
-		push(u);
+		if (!covered.has(`${u.consumer.path}|${u.target.path}|${symbolKey(u.targetSym)}`)) push(u, true);
 	}
 
-	// Scene transitivity: a scene inherits the folder-targeting usages of its
-	// attached scripts, marked `via` the script.
-	const all = new Map<string, PointerUsage[]>();
-	for (const [path, list] of direct) all.set(path, [...list]);
+	// Scene transitivity: a scene inherits its attached scripts' usages.
 	for (const ff of model.files) {
-		if (ff.file.extension !== "tscn" || inTarget(ff.file)) continue;
+		if (ff.file.extension !== "tscn") continue;
 		for (const e of ff.fileEdges) {
 			if (e.label !== "script") continue;
-			const scriptUsages = direct.get(e.toFile.path);
-			if (!scriptUsages) continue;
-			for (const u of scriptUsages) {
+			for (const u of direct.get(e.toFile.path) ?? []) {
 				push(
 					{
 						consumer: ff.file,
@@ -232,32 +218,31 @@ export function collectPointerUsage(model: FlowchartModel, target: TFolder): Poi
 						via: e.toFile,
 						viaSym: u.consumerSym,
 					},
-					all,
+					false,
 				);
 			}
 		}
 	}
-
-	const out: PointerUsage[] = [];
-	for (const list of all.values()) out.push(...list);
 	return out;
 }
 
-export function indexPointerUsage(usages: PointerUsage[]): PointerUsageIndex {
-	const byTarget: PointerUsageIndex["byTarget"] = new Map();
-	const byConsumer: PointerUsageIndex["byConsumer"] = new Map();
-	for (const u of usages) {
-		let consumers = byTarget.get(u.target.path);
-		if (!consumers) byTarget.set(u.target.path, (consumers = new Map()));
-		let list = consumers.get(u.consumer.path);
-		if (!list) consumers.set(u.consumer.path, (list = []));
-		list.push(u);
+/**
+ * The usages of a pointer file's code from outside it: target inside, consumer
+ * outside (and, for a scene's inherited usage, the attached script outside
+ * too — a scene reaching the code through a script that lives inside is
+ * already listed via its own `attaches script` edge).
+ */
+export function usagesInto(all: PointerUsage[], isInside: (path: string) => boolean): PointerUsage[] {
+	return all.filter(
+		(u) => isInside(u.target.path) && !isInside(u.consumer.path) && !(u.via && isInside(u.via.path)),
+	);
+}
 
-		let targets = byConsumer.get(u.consumer.path);
-		if (!targets) byConsumer.set(u.consumer.path, (targets = new Map()));
-		let list2 = targets.get(u.target.path);
-		if (!list2) targets.set(u.target.path, (list2 = []));
-		list2.push(u);
-	}
-	return { byTarget, byConsumer };
+/** The usages a pointer file's own code makes of `accept`ed code outside it (inherited scene usages excluded). */
+export function usagesOutOf(
+	all: PointerUsage[],
+	isInside: (path: string) => boolean,
+	accept: (u: PointerUsage) => boolean,
+): PointerUsage[] {
+	return all.filter((u) => !u.via && isInside(u.consumer.path) && !isInside(u.target.path) && accept(u));
 }

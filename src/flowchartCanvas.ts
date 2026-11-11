@@ -3,6 +3,7 @@ import dagre from "@dagrejs/dagre";
 import CodeFilesPlugin from "./main";
 import { FlowchartFile, FlowchartModel, toSnakeCase } from "./flowchartModel";
 import { SymbolInfo } from "./symbolResolver";
+import { stringifyCompact } from "./jsonCompact";
 
 /**
  * Turns a FlowchartModel into `.canvas` files:
@@ -22,45 +23,45 @@ import { SymbolInfo } from "./symbolResolver";
  * `Movement_subfolder/walk_codefile/walk_codefile.canvas` and
  * `Movement_subfolder/Movement_subfolder.canvas`.
  *
- * Every code file gets its own folder (named after the file's basename)
- * holding one canvas per declaration plus the file's own canvas, which
- * aggregates them. A folder's own canvas always lives *inside* its own
+ * Every code file gets its own folder holding one canvas per declaration plus
+ * the file's own canvas, which aggregates them. The folder is named after the
+ * file's basename, or its full name when a sibling code file shares the
+ * basename (`player.rs_codefile/` next to `player.tscn_codefile/` —
+ * `fileStemFor`). A folder's own canvas always lives *inside* its own
  * mirrored directory, alongside its contents
  * (`Subflowcharts/A_subfolder/B_subfolder/B_subfolder.canvas`, sitting next to
  * `Subflowcharts/A_subfolder/B_subfolder/foo_codefile/foo_codefile.canvas`
  * etc.), and aggregates the canvases of the files and folders it contains.
  *
- * Naming collisions are always resolved on the more specific side, so file
- * canvases keep plain names and vault folders keep plain mirrored names:
+ * Names are deterministic — they depend only on the code, never on the order
+ * a run happens to write things in — and short:
  * - Same-name declarations in one file (trait method vs impls, overloads,
  *   nested scopes) go through a three-rung ladder (`buildDeclNameMap`):
  *   container qualification (`MapConfig.seed_symbol.canvas`), then minimal
  *   distinguishing parameter types (`Move (float)_symbol.canvas` — shared
- *   parameters are omitted), then an occurrence number (`helper 2_symbol.canvas`;
- *   `#` is illegal in Obsidian file names) for genuinely identical duplicates
- *   such as #[cfg] variants. Non-colliding symbols keep the plain name.
- * - A declaration named the same as its own file (the common "Player.cs holds
- *   class Player" pattern) gets a " (kind)" suffix
- *   (`Player (class)_symbol.canvas`).
- * - A file named the same as a *sibling subfolder* (`Movement/move.cs` next
- *   to `Movement/move/`) gets a "File" suffix on its folder
- *   (`moveFile_codefile/move_codefile.canvas`).
- * (The last two rules predate the granularity suffixes, which already keep the
- * two sides apart; they are kept so names stay stable across the change.)
- * Both checks are case-insensitive (`Client` in `client.cs` still collides on
- * a case-insensitive filesystem); a cross-group case-only clash (trait `Seed`
- * next to fn `seed`) is likewise qualified with its container when one is
- * available. Any collision that survives those rules (e.g. same-basename
- * files with different extensions sharing one folder) falls back to "_"
- * prefixes on the generated file name, up to 5 (`claimCanvasPath`); canvases
- * still colliding after that are skipped and reported via
- * `GenerateResult.skipped`.
- * Generation warns about any such renames via `GenerateResult.renamedFiles`,
- * and reports canvases left over from earlier naming schemes (present before
- * the run, not written by it) via `GenerateResult.staleFiles`. Stale canvases
- * carrying a managed granularity tag are trashed instead when the
- * `pruneStaleFlowcharts` setting is on (reported via
- * `GenerateResult.prunedFiles`).
+ *   parameters are omitted), then an occurrence number (`helper 2_symbol.canvas`,
+ *   the twin of the `#helper#2` link; `#` is illegal in file names) for
+ *   genuinely identical duplicates such as #[cfg] variants. A qualifier
+ *   longer than `MAX_DECL_NAME` falls back to the occurrence numbers.
+ *   Non-colliding symbols keep the plain name.
+ * - A name longer than `MAX_DECL_NAME` (48) is cut and tagged with a short
+ *   hash (`mecha7_void_shield_grows_regenerates_and_b~3fa2c_symbol.canvas`).
+ * - A cross-group case-only clash (trait `Seed` next to fn `seed` — one file
+ *   on a case-insensitive filesystem) gets the kind (`Seed (interface)`),
+ *   else a short hash.
+ * - Anything still colliding (should not happen) gets a deterministic
+ *   ` ~<hash>` tag from `claimCanvasPath`; canvases with no free name left
+ *   are skipped and reported via `GenerateResult.skipped`.
+ * Qualified names are listed in `GenerateResult.renamedFiles` (informational).
+ * When a canvas's name changes between runs, the existing canvas is MOVED to
+ * the new path (`moveRenamedCanvases`, matched by the code identity the canvas
+ * shows), so positions, include flags, custom tags, text nodes and flows.json
+ * references survive (`GenerateResult.movedFiles`). Canvases left over that
+ * no identity matches (present before the run, not written by it) are
+ * reported via `GenerateResult.staleFiles`; those carrying a managed
+ * granularity tag are trashed instead when the `pruneStaleFlowcharts`
+ * setting is on (`GenerateResult.prunedFiles`), and generated folders left
+ * empty are removed.
  *
  * Which sub-flowcharts appear in the flow canvases (main.canvas and named
  * main-<name>.canvas) is driven by `<root>/flowcharts/flows.json`, edited via
@@ -219,9 +220,16 @@ export interface GenerateResult {
 	canvasCount: number;
 	nodeCount: number;
 	edgeCount: number;
-	/** Generated paths that were qualified/suffixed to avoid a name collision — the file's folder ("File" suffix) or a declaration canvas (container/signature/occurrence qualifier, " (kind)" suffix). See module doc. */
+	/** Declaration canvases whose name is qualified to stay unique (container/signature/occurrence, a cut long name, a case-clash kind or hash tag) or that took a collision tag. Informational — see module doc. */
 	renamedFiles: string[];
-	/** Desired canvas paths never written because even 5 "_" prefixes didn't resolve the collision. */
+	/**
+	 * Pre-existing canvases moved to their new name instead of being
+	 * regenerated fresh (naming change, new same-named sibling, …): node
+	 * positions, include flags, custom tags and text nodes carry over, and
+	 * flows.json references were rewritten.
+	 */
+	movedFiles: { from: string; to: string }[];
+	/** Desired canvas paths never written because every collision retry was taken (should not happen). */
 	skipped: string[];
 	/**
 	 * Pre-existing canvases under the generated tree that this run did not
@@ -252,6 +260,8 @@ export interface EdgeSpec {
 	fromKey: string;
 	toKey: string;
 	label?: string;
+	/** Extra JSONCanvas edge fields (e.g. `styleAttributes`, `toEnd`) — used by the shared-code links of composed flows. */
+	extra?: Record<string, any>;
 }
 
 // ---------- tag-driven aggregation ----------
@@ -284,13 +294,17 @@ export interface AggregateInfo {
  * target no child covers propagates upward as this canvas's own external edge.
  */
 export function liftChildEdges(children: AggregateInfo[]): { edges: EdgeSpec[]; externalEdges: ExternalEdge[] } {
-	const edges: EdgeSpec[] = [];
 	const upward: ExternalEdge[] = [];
-	const seen = new Set<string>();
 	const seenUp = new Set<string>();
-	for (const a of children) {
+	// Child pair → the labels of every lifted edge between them. One edge per
+	// pair, labelled with the alphabetically first label, so the result does
+	// not depend on the order the children (or their edges) arrive in — the
+	// code pass and the tag pass list them differently.
+	const pairs = new Map<string, { a: AggregateInfo; b: AggregateInfo; labels: Set<string> }>();
+	const ordered = [...children].sort((x, y) => x.canvasPath.localeCompare(y.canvasPath));
+	for (const a of ordered) {
 		for (const e of a.externalEdges) {
-			const b = children.find((c) => c !== a && c.coveredFiles.has(e.file));
+			const b = ordered.find((c) => c !== a && c.coveredFiles.has(e.file));
 			if (!b) {
 				const k = `${e.file}${e.subpath} ${e.label ?? ""}`;
 				if (!seenUp.has(k)) {
@@ -300,11 +314,16 @@ export function liftChildEdges(children: AggregateInfo[]): { edges: EdgeSpec[]; 
 				continue;
 			}
 			if (!a.included || !b.included) continue;
-			const dedupe = `${a.canvasPath}->${b.canvasPath}`;
-			if (seen.has(dedupe)) continue;
-			seen.add(dedupe);
-			edges.push({ fromKey: `canvas:${a.canvasPath}`, toKey: `canvas:${b.canvasPath}`, label: e.label });
+			const key = `${a.canvasPath}->${b.canvasPath}`;
+			let p = pairs.get(key);
+			if (!p) pairs.set(key, (p = { a, b, labels: new Set() }));
+			p.labels.add(e.label ?? "");
 		}
+	}
+	const edges: EdgeSpec[] = [];
+	for (const { a, b, labels } of pairs.values()) {
+		const label = [...labels].filter((l) => l).sort()[0];
+		edges.push({ fromKey: `canvas:${a.canvasPath}`, toKey: `canvas:${b.canvasPath}`, label });
 	}
 	return { edges, externalEdges: upward };
 }
@@ -336,14 +355,28 @@ export function stableId(seed: string): string {
 	return hi.toString(16).padStart(8, "0") + lo.toString(16).padStart(8, "0");
 }
 
-/** Max "_" prefixes tried when a generated canvas path collides within a run. */
-const MAX_COLLISION_PREFIXES = 5;
+/** Short deterministic hex tag for a seed (the first `len` chars of `stableId`). */
+export function shortHash(seed: string, len = 4): string {
+	return stableId(seed).slice(0, len);
+}
+
+/** Max alternative names tried when a generated canvas path still collides within a run. */
+const MAX_COLLISION_RETRIES = 5;
+
+/** `…/name_symbol.canvas` → `…/name ~ab12_symbol.canvas` (the tag goes before the granularity suffix). */
+function withCollisionTag(path: string, tag: string): string {
+	const m = /(_(?:symbol|codefile|subfolder))?\.canvas$/.exec(path);
+	if (!m) return `${path} ~${tag}`;
+	return `${path.slice(0, m.index)} ~${tag}${m[0]}`;
+}
 
 /**
- * Claims a canvas path for the current run. On a collision (compared
- * lowercased, for case-insensitive filesystems) the file name gets a "_"
- * prefix and is retried, up to `MAX_COLLISION_PREFIXES` prefixes (`_x.canvas`,
- * `__x.canvas`, …). Returns null when the path is still taken after that.
+ * Claims a canvas path for the current run. The naming rules already keep
+ * every name unique inside its folder, so this only fires on a leftover
+ * collision (compared lowercased, for case-insensitive filesystems): the name
+ * then gets a short deterministic ` ~<hash>` tag (seeded by the desired path
+ * and the attempt, so the same input always yields the same name — never an
+ * order-dependent prefix). Returns null when every retry is taken.
  */
 function claimCanvasPath(claimed: Set<string>, desired: string): string | null {
 	let path = desired;
@@ -353,9 +386,8 @@ function claimCanvasPath(claimed: Set<string>, desired: string): string | null {
 			claimed.add(key);
 			return path;
 		}
-		if (i >= MAX_COLLISION_PREFIXES) return null;
-		const slash = path.lastIndexOf("/");
-		path = `${path.slice(0, slash + 1)}_${path.slice(slash + 1)}`;
+		if (i >= MAX_COLLISION_RETRIES) return null;
+		path = withCollisionTag(desired, shortHash(`${desired}#${i + 1}`));
 	}
 }
 
@@ -378,6 +410,11 @@ export async function generateFlowcharts(
 	const outBase = root.path === "/" ? "flowcharts" : `${root.path}/flowcharts`;
 	const nodeW = plugin.settings.canvasNodeWidth;
 	const nodeH = plugin.settings.canvasNodeHeight;
+	const ctx: NamingContext = {
+		outBase,
+		root,
+		codeExts: new Set([...plugin.settings.extensions, "tscn", ...model.files.map((ff) => ff.file.extension)]),
+	};
 
 	let canvasCount = 0;
 	let nodeCount = 0;
@@ -415,22 +452,44 @@ export async function generateFlowcharts(
 		if (p) preclaimed.set(desired, p);
 		return p;
 	};
+	/** Canvas identity (`sym:<file>#name[#N]` / `file:<path>` / `dir:<path>`) → its claimed path. */
+	const plannedByIdentity = new Map<string, string>();
 	for (const ff of model.files) {
-		const names = buildDeclNameMap(ff.symbols, ff.file.basename);
+		const names = buildDeclNameMap(ff.symbols, ff.file.path);
 		declNameMaps.set(ff.file.path, names);
-		for (const sym of ff.symbols) preclaim(declCanvasPathFor(outBase, root, ff.file, sym, names).path);
-		const p = preclaim(fileCanvasPathFor(outBase, root, ff.file));
-		if (p) fileCanvasPathByFile.set(ff.file.path, p);
+		for (const sym of ff.symbols) {
+			const p = preclaim(declCanvasPathFor(ctx, ff.file, sym, names).path);
+			if (p) plannedByIdentity.set(`sym:${ff.file.path}${subpathFor(sym)}`, p);
+		}
+		const p = preclaim(fileCanvasPathFor(ctx, ff.file));
+		if (p) {
+			fileCanvasPathByFile.set(ff.file.path, p);
+			plannedByIdentity.set(`file:${ff.file.path}`, p);
+		}
 	}
 	const preclaimFolders = (node: FolderTreeNode): void => {
 		for (const [, sub] of node.subfolders) preclaimFolders(sub);
-		const desired = folderCanvasPathFor(outBase, root, node.folder);
+		const desired = folderCanvasPathFor(ctx, node.folder);
 		if (desired) {
 			const p = preclaim(desired);
 			if (p) folderCanvasPathByFolderPath.set(node.folder.path, p);
 		}
 	};
 	if (folderTree) preclaimFolders(folderTree);
+
+	// A canvas whose name changed (a naming-rule change, a new same-named
+	// sibling, a symbol renamed by occurrence shift…) is MOVED to its new
+	// path instead of being rewritten fresh and the old one pruned: the move
+	// keeps the user's node positions, include flags, custom tags and text
+	// nodes, and flows.json entries follow it.
+	const movedFiles = await moveRenamedCanvases(app, preExisting, plannedByIdentity);
+	if (movedFiles.length > 0) {
+		await renameFlowReferences(app, `${outBase}`, new Map(movedFiles.map((m) => [m.from, m.to])));
+		const moved = new Set(movedFiles.map((m) => m.from.toLowerCase()));
+		for (let i = preExisting.length - 1; i >= 0; i--) {
+			if (moved.has(preExisting[i].toLowerCase())) preExisting.splice(i, 1);
+		}
+	}
 
 	/**
 	 * Aggregate-chain tags for an edge target: the claimed codefile canvas
@@ -485,9 +544,7 @@ export async function generateFlowcharts(
 	const fileAggInfos = new Map<string, AggregateInfo>();
 
 	for (const ff of model.files) {
-		const folder = fileFolderFor(outBase, root, ff.file);
-		if (folder.renamed) renamedFiles.push(`${folder.path}/`);
-		const declNames = declNameMaps.get(ff.file.path) ?? buildDeclNameMap(ff.symbols, ff.file.basename);
+		const declNames = declNameMaps.get(ff.file.path) ?? buildDeclNameMap(ff.symbols, ff.file.path);
 
 		// Per-symbol outgoing edge targets. Every detected edge is a
 		// symbol→symbol / symbol→reducer / symbol→table edge, so they all
@@ -538,7 +595,7 @@ export async function generateFlowcharts(
 		// One declaration canvas per symbol: a single narrowed symbol node, with
 		// its outgoing edges recorded as tags (code target + aggregate chain).
 		for (const sym of ff.symbols) {
-			const decl = declCanvasPathFor(outBase, root, ff.file, sym, declNames);
+			const decl = declCanvasPathFor(ctx, ff.file, sym, declNames);
 			if (decl.renamed) renamedFiles.push(decl.path);
 			const targets = targetsBySym.get(fnKey(ff.file, sym.name, sym.occurrence)) ?? [];
 			const tagSet = new Set<string>();
@@ -616,7 +673,7 @@ export async function generateFlowcharts(
 			for (const c of aggregateChainTagsFor(fe.toFile.path, fe.label)) childTags.add(c);
 		}
 		const data = buildCanvasData(specs, edges, plugin);
-		const fileCanvasDesired = fileCanvasPathFor(outBase, root, ff.file);
+		const fileCanvasDesired = fileCanvasPathFor(ctx, ff.file);
 		const ownCanvasPath = preclaimed.get(fileCanvasDesired) ?? fileCanvasDesired;
 		const written = await writeClaimed(fileCanvasDesired, data, {
 			tags: [TAG_CODEFILE, ...withoutSelfTags(ownCanvasPath, [...childTags])],
@@ -661,7 +718,7 @@ export async function generateFlowcharts(
 		}
 
 		const data = buildCanvasData(specs, edges, plugin);
-		const desired = folderCanvasPathFor(outBase, root, node.folder)!;
+		const desired = folderCanvasPathFor(ctx, node.folder)!;
 		const written = await writeClaimed(desired, data, {
 			tags: [TAG_SUBFOLDER, ...withoutSelfTags(preclaimed.get(desired) ?? desired, [...edgeTags])],
 			autoInclude: true,
@@ -688,6 +745,9 @@ export async function generateFlowcharts(
 		}
 		stale.push(p);
 	}
+	// Moves and prunes leave generated `_codefile` / `_subfolder` dirs empty.
+	const sub = app.vault.getAbstractFileByPath(`${outBase}/Subflowcharts`);
+	if (sub instanceof TFolder) await removeEmptyGeneratedDirs(app, sub);
 	return {
 		outBase,
 		fileCount: model.files.length,
@@ -695,10 +755,136 @@ export async function generateFlowcharts(
 		nodeCount,
 		edgeCount,
 		renamedFiles,
+		movedFiles,
 		skipped,
 		staleFiles: stale,
 		prunedFiles,
 	};
+}
+
+/** Directory path of a vault path ("" for top-level). */
+function dirOf(path: string): string {
+	const slash = path.lastIndexOf("/");
+	return slash < 0 ? "" : path.slice(0, slash);
+}
+
+/**
+ * Moves pre-existing generated canvases whose identity this run writes under
+ * a new path (see the call site). Identity comes from the canvas itself: a
+ * `symbol` canvas's narrowed file node (`file` + `subpath`), a `codefile`
+ * canvas's whole-file node or the symbol canvases next to it. Only canvases
+ * that would otherwise go stale are considered, and only onto paths that are
+ * still free, so an unchanged tree costs nothing beyond the path comparison.
+ * Uses `fileManager.renameFile`, so links in notes follow too.
+ */
+async function moveRenamedCanvases(
+	app: App,
+	preExisting: string[],
+	plannedByIdentity: Map<string, string>,
+): Promise<{ from: string; to: string }[]> {
+	const planned = new Set([...plannedByIdentity.values()].map((p) => p.toLowerCase()));
+	const candidates = preExisting.filter((p) => !planned.has(p.toLowerCase()));
+	if (candidates.length === 0) return [];
+	const parsed = new Map<string, { file: TFile; data: any; tags: string[] }>();
+	for (const p of candidates) {
+		const file = app.vault.getAbstractFileByPath(p);
+		if (!(file instanceof TFile)) continue;
+		try {
+			const data = JSON.parse(await app.vault.cachedRead(file));
+			parsed.set(p, { file, data, tags: tagsOf(data?.metadata) });
+		} catch {
+			// unreadable — leave it to the stale report
+		}
+	}
+	const nodesOf = (data: any): any[] => (Array.isArray(data?.nodes) ? data.nodes : []);
+	const identity = new Map<string, string>();
+	const codeFileByDir = new Map<string, string>();
+	for (const [p, c] of parsed) {
+		if (!c.tags.includes(TAG_SYMBOL)) continue;
+		const node = nodesOf(c.data).find((n) => n?.type === "file" && typeof n.file === "string" && typeof n.subpath === "string");
+		if (!node) continue;
+		identity.set(p, `sym:${node.file}${node.subpath}`);
+		codeFileByDir.set(dirOf(p), node.file);
+	}
+	for (const [p, c] of parsed) {
+		if (!c.tags.includes(TAG_CODEFILE)) continue;
+		const whole = nodesOf(c.data).find(
+			(n) => n?.type === "file" && typeof n.file === "string" && !n.subpath && !n.file.endsWith(".canvas"),
+		);
+		const codeFile = whole?.file ?? codeFileByDir.get(dirOf(p));
+		if (codeFile) identity.set(p, `file:${codeFile}`);
+	}
+	const moves: { from: string; to: string }[] = [];
+	const taken = new Set<string>();
+	for (const [from, id] of identity) {
+		const to = plannedByIdentity.get(id);
+		if (!to || taken.has(to.toLowerCase()) || findCanvasFile(app, to)) continue;
+		const file = parsed.get(from)!.file;
+		try {
+			await ensureFolderPath(app, dirOf(to));
+			await app.fileManager.renameFile(file, to);
+			taken.add(to.toLowerCase());
+			moves.push({ from, to });
+		} catch (e) {
+			console.error(`vscode-editor: could not move ${from} to ${to}`, e);
+		}
+	}
+	return moves;
+}
+
+/**
+ * Rewrites every flows.json string equal to a moved canvas path (list-flow
+ * members, timeline `canvas` refs, anything else) to the new path. Written
+ * only when something changed; formatting matches `writeFlows`.
+ */
+async function renameFlowReferences(app: App, flowchartsFolder: string, renames: Map<string, string>): Promise<void> {
+	const file = app.vault.getAbstractFileByPath(normalizePath(`${flowchartsFolder}/flows.json`));
+	if (!(file instanceof TFile)) return;
+	let raw: any;
+	try {
+		raw = JSON.parse(await app.vault.read(file));
+	} catch {
+		return;
+	}
+	let changed = false;
+	const walk = (v: any): any => {
+		if (typeof v === "string") {
+			const to = renames.get(v);
+			if (to) changed = true;
+			return to ?? v;
+		}
+		if (Array.isArray(v)) return v.map(walk);
+		if (v && typeof v === "object") {
+			const out: Record<string, any> = {};
+			for (const [k, x] of Object.entries(v)) out[k] = walk(x);
+			return out;
+		}
+		return v;
+	};
+	const next = walk(raw);
+	if (changed) await app.vault.modify(file, stringifyCompact(next, 160));
+}
+
+/**
+ * Deletes generated directories (`*_codefile` / `*_subfolder`) left with no
+ * files at all under `dir`, bottom-up. Never touches a folder that still
+ * holds anything, so a user file inside keeps its folder.
+ */
+async function removeEmptyGeneratedDirs(app: App, dir: TFolder): Promise<void> {
+	for (const child of [...dir.children]) {
+		if (child instanceof TFolder) await removeEmptyGeneratedDirs(app, child);
+	}
+	const generated = dir.name.endsWith(SUFFIX_CODEFILE) || dir.name.endsWith(SUFFIX_SUBFOLDER);
+	if (generated && dir.children.length === 0) {
+		try {
+			// Double-check on disk (the vault does not list hidden files) —
+			// only a truly empty folder is removed.
+			const listing = await app.vault.adapter.list(dir.path);
+			if (listing.files.length === 0 && listing.folders.length === 0) await app.vault.delete(dir, true);
+		} catch (e) {
+			console.warn(`vscode-editor: could not remove empty generated folder ${dir.path}`, e);
+		}
+	}
 }
 
 // ---------- include flags (canvas metadata) ----------
@@ -833,13 +1019,17 @@ export function subflowchartNodeSpec(canvasPath: string, w: number, h: number): 
 /**
  * Reference to a declaration canvas from inside the aggregating file canvas.
  * Keyed like a symbol node (`<file>#<name>#<occurrence>`) so the tag-driven
- * edge assembly resolves onto these nodes unchanged.
+ * edge assembly resolves onto these nodes unchanged — but its **id** is the
+ * one `subflowchartNodeSpec` gives the same canvas (`canvas:<path>`), because
+ * flowchartAggregate.ts rewrites this file canvas from tags with exactly that
+ * id. Two id schemes made every "Regenerate all flowcharts" (code pass, then
+ * tag pass) drop the file canvas's dragged positions and rewrite it twice.
  */
 function declRefNodeSpec(ff: FlowchartFile, sym: SymbolInfo, canvasPath: string, w: number, h: number): NodeSpec {
 	const key = fnKey(ff.file, sym.name, sym.occurrence);
 	return {
 		key,
-		id: stableId(key),
+		id: stableId(`canvas:${canvasPath}`),
 		node: { id: "", type: "file", file: canvasPath, color: COLOR_SUBFLOWCHART },
 		width: w,
 		height: h,
@@ -908,6 +1098,7 @@ export function buildCanvasData(
 			toEnd: "arrow",
 		};
 		if (e.label) edge.label = e.label;
+		if (e.extra) Object.assign(edge, e.extra);
 		canvasEdges.push(edge);
 	}
 
@@ -927,6 +1118,18 @@ export interface WriteCanvasOptions {
 	 * on overwrite — an absent flag there is the user's explicit Exclude.
 	 */
 	autoInclude?: boolean;
+	/**
+	 * Carry each existing node's geometry onto the regenerated node with the
+	 * same id (default true). Laid-out flows (timeline flows) pass false: their
+	 * positions come from flows.json, never from a previous run.
+	 */
+	keepGeometry?: boolean;
+	/**
+	 * Canvas `metadata` for a newly created canvas (e.g. advanced-canvas's
+	 * `{version, frontmatter}`). On overwrite the existing metadata wins; keys
+	 * it lacks are filled in from this object.
+	 */
+	metadata?: Record<string, any>;
 }
 
 export interface WriteCanvasResult {
@@ -985,15 +1188,17 @@ export async function writeCanvas(
 	const managed = opts.tags ?? [];
 	if (existing) {
 		let existingData: any;
+		let existingText = "";
 		try {
-			existingData = JSON.parse(await app.vault.cachedRead(existing));
+			existingText = await app.vault.cachedRead(existing);
+			existingData = JSON.parse(existingText);
 		} catch {
 			existingData = undefined;
 		}
 		let metadata: any = existingData?.metadata;
 		// Carry each existing node's geometry onto the regenerated node with
 		// the same id (position preservation — see the doc comment above).
-		if (existingData && Array.isArray(existingData.nodes)) {
+		if (opts.keepGeometry !== false && existingData && Array.isArray(existingData.nodes)) {
 			const geometryById = new Map<string, { x: number; y: number; width: number; height: number }>();
 			for (const n of existingData.nodes) {
 				if (typeof n?.id === "string") {
@@ -1023,14 +1228,57 @@ export async function writeCanvas(
 			}
 			metadata.frontmatter.tags = [...new Set([...userTags, ...managed])];
 		}
+		if (opts.metadata) {
+			metadata = { ...opts.metadata, ...(metadata && typeof metadata === "object" ? metadata : {}) };
+		}
 		const out = metadata && typeof metadata === "object" ? { ...data, metadata } : data;
-		await app.vault.modify(existing, JSON.stringify(out, null, "\t"));
+		const text = JSON.stringify(out, null, "\t");
+		// Unchanged canvases are not rewritten: a re-run over an unchanged
+		// tree then touches no files (no disk writes, no re-indexing). Order
+		// alone (nodes, edges, tags — the code pass and the tag pass list them
+		// differently) does not count as a change.
+		if (text !== existingText && canonicalCanvas(out) !== canonicalCanvas(existingData)) {
+			await app.vault.modify(existing, text);
+		}
 		return { included };
 	}
-	const tags = [...new Set([...managed, ...(opts.autoInclude ? [AGGREGATE_INCLUDE_FLAG] : [])])];
-	const out = tags.length > 0 ? { ...data, metadata: { frontmatter: { tags } } } : data;
+	// Same order as an overwrite produces (user tags, then managed ones), so
+	// regenerating a freshly created canvas is a no-op.
+	const tags = [...new Set([...(opts.autoInclude ? [AGGREGATE_INCLUDE_FLAG] : []), ...managed])];
+	let createMetadata: Record<string, any> | undefined = opts.metadata ? { ...opts.metadata } : undefined;
+	if (tags.length > 0) {
+		createMetadata = createMetadata ?? {};
+		createMetadata.frontmatter = { ...(createMetadata.frontmatter ?? {}), tags };
+	}
+	const out = createMetadata ? { ...data, metadata: createMetadata } : data;
 	await app.vault.create(path, JSON.stringify(out, null, "\t"));
 	return { included: opts.autoInclude ?? false };
+}
+
+/**
+ * Order-insensitive form of a canvas for change detection: nodes and edges
+ * sorted by id, frontmatter tags sorted, object keys sorted.
+ */
+function canonicalCanvas(data: any): string {
+	if (!data || typeof data !== "object") return String(data);
+	const byId = (a: any, b: any) => String(a?.id ?? "").localeCompare(String(b?.id ?? ""));
+	const norm: any = { ...data };
+	if (Array.isArray(data.nodes)) norm.nodes = [...data.nodes].sort(byId);
+	if (Array.isArray(data.edges)) norm.edges = [...data.edges].sort(byId);
+	const tags = data.metadata?.frontmatter?.tags;
+	if (Array.isArray(tags)) {
+		norm.metadata = { ...data.metadata, frontmatter: { ...data.metadata.frontmatter, tags: [...tags].sort() } };
+	}
+	const sortKeys = (v: any): any => {
+		if (Array.isArray(v)) return v.map(sortKeys);
+		if (v && typeof v === "object") {
+			const out: Record<string, any> = {};
+			for (const k of Object.keys(v).sort()) out[k] = sortKeys(v[k]);
+			return out;
+		}
+		return v;
+	};
+	return JSON.stringify(sortKeys(norm));
 }
 
 async function ensureFolderPath(app: App, path: string): Promise<void> {
@@ -1084,36 +1332,60 @@ function mirroredDir(rootPath: string, item: TFile | TFolder): string {
 }
 
 /**
- * Subflowcharts/<subpath>/<File>_codefile — the per-file folder holding the
- * file's own canvas plus one canvas per declaration. A file whose basename
- * matches a *sibling subfolder* (`Movement/move.cs` next to `Movement/move/`)
- * keeps a "File" suffix on its folder (`moveFile_codefile/`) so names stay
- * stable from before the granularity suffixes existed — `_codefile` vs
- * `_subfolder` already keeps the two mirrored directories apart.
+ * Where one generation run writes: the output base, the code root, and the
+ * extensions that count as code files when deciding whether two sibling files
+ * share a basename (the configured extensions, not just this run's filter, so
+ * a per-extension run names files exactly like an "All extensions" run).
  */
-function fileFolderFor(outBase: string, root: TFolder, file: TFile): { path: string; renamed: boolean } {
-	const relDir = mirroredDir(root.path, file);
-	// Case-insensitive: `Move.cs` next to a `move/` folder collides on disk
-	// even though the names differ in case.
-	const siblingClash = file.parent?.children.some(
-		(c) => c instanceof TFolder && c.name.toLowerCase() === file.basename.toLowerCase(),
-	);
-	const name = `${siblingClash ? `${file.basename}File` : file.basename}${SUFFIX_CODEFILE}`;
-	return {
-		path: normalizePath(`${outBase}/Subflowcharts/${relDir ? relDir + "/" : ""}${name}`),
-		renamed: !!siblingClash,
-	};
+interface NamingContext {
+	outBase: string;
+	root: TFolder;
+	codeExts: Set<string>;
 }
 
 /**
- * Subflowcharts/<subpath>/<File>_codefile/<File>_codefile.canvas — the file's
- * own canvas, inside its per-file folder (see `fileFolderFor`). Carries only
- * the granularity suffix; never collision-suffixed.
+ * The name a code file's generated folder and canvas carry, before the
+ * `_codefile` suffix: its basename (`walk.cs` → `walk`), or its full name
+ * when a sibling code file shares the basename (`player.rs` next to
+ * `player.tscn` → `player.rs` / `player.tscn`, so each file keeps its own
+ * folder). Compared case-insensitively; two files whose whole names differ
+ * only in case (possible on a case-sensitive filesystem) also get a short
+ * hash of their path.
  */
-function fileCanvasPathFor(outBase: string, root: TFolder, file: TFile): string {
-	return normalizePath(
-		`${fileFolderFor(outBase, root, file).path}/${file.basename}${SUFFIX_CODEFILE}.canvas`,
-	);
+function fileStemFor(file: TFile, codeExts: Set<string>): string {
+	const lowerBase = file.basename.toLowerCase();
+	const lowerName = file.name.toLowerCase();
+	let sharesBase = false;
+	let sharesName = false;
+	for (const c of file.parent?.children ?? []) {
+		if (!(c instanceof TFile) || c === file || !codeExts.has(c.extension)) continue;
+		if (c.basename.toLowerCase() !== lowerBase) continue;
+		sharesBase = true;
+		if (c.name.toLowerCase() === lowerName) sharesName = true;
+	}
+	if (sharesName) return `${file.name} ~${shortHash(file.path)}`;
+	return sharesBase ? file.name : file.basename;
+}
+
+/**
+ * Subflowcharts/<subpath>/<stem>_codefile — the per-file folder holding the
+ * file's own canvas plus one canvas per declaration (stem: see
+ * `fileStemFor`). A file named like a sibling subfolder (`kg_rules/steering.rs`
+ * next to `kg_rules/steering/`) needs nothing extra: `steering_codefile/` and
+ * `steering_subfolder/` are already distinct.
+ */
+function fileFolderFor(ctx: NamingContext, file: TFile): string {
+	const relDir = mirroredDir(ctx.root.path, file);
+	const name = `${fileStemFor(file, ctx.codeExts)}${SUFFIX_CODEFILE}`;
+	return normalizePath(`${ctx.outBase}/Subflowcharts/${relDir ? relDir + "/" : ""}${name}`);
+}
+
+/**
+ * Subflowcharts/<subpath>/<stem>_codefile/<stem>_codefile.canvas — the file's
+ * own canvas, inside its per-file folder (see `fileFolderFor`).
+ */
+function fileCanvasPathFor(ctx: NamingContext, file: TFile): string {
+	return normalizePath(`${fileFolderFor(ctx, file)}/${fileStemFor(file, ctx.codeExts)}${SUFFIX_CODEFILE}.canvas`);
 }
 
 // ---------- declaration naming ----------
@@ -1189,26 +1461,51 @@ function applyOccurrenceRung(tied: [SymbolInfo, string][]): void {
 }
 
 /**
+ * Longest declaration display name (before the `_symbol` suffix). Longer
+ * names — test functions named like sentences, deep container chains — are
+ * cut and tagged with a short hash so they stay unique (`capName`).
+ */
+export const MAX_DECL_NAME = 48;
+
+/** Cuts a display name longer than `MAX_DECL_NAME`, keeping it unique with a 5-hex hash of `seed`. */
+function capName(name: string, seed: string): string {
+	if (name.length <= MAX_DECL_NAME) return name;
+	const tag = `~${shortHash(seed, 5)}`;
+	return `${name.slice(0, MAX_DECL_NAME - tag.length).replace(/[ .,(_-]+$/, "")}${tag}`;
+}
+
+/** Replaces characters Obsidian or Windows reject in file names. */
+function safeFileName(name: string): string {
+	return name.replace(/[\\/:*?"<>|#^[\]]/g, "-");
+}
+
+/**
  * Computes the display name (no folder, no extension) for every declaration
- * in a file. Non-colliding symbols keep the plain name. Same-name groups go
- * through a three-rung ladder:
+ * in a file. Every rule is deterministic and depends only on the file's own
+ * symbols, so the same code always yields the same names. Non-colliding
+ * symbols keep the plain name. Same-name groups go through a three-rung
+ * ladder:
  *  1. container qualification (`MapConfig.seed`) — only when the group's
  *     enclosing scopes actually differ, so same-class overloads don't carry
  *     a redundant class prefix;
  *  2. minimal distinguishing parameter types (`Move (float)`);
- *  3. occurrence number (`helper 2`) for identical duplicates.
- * Afterwards: a name equal to its file's basename gets the " (kind)" suffix
- * (case-insensitive), and cross-group case-only clashes (trait `Seed` next
- * to fn `seed`) get a container qualifier where one is available — anything
- * still tied falls through to claimCanvasPath's "_" prefixes.
+ *  3. occurrence number (`helper 2` — the canvas twin of the `#helper#2`
+ *     link) for identical duplicates.
+ * A rung-1/2 name longer than `MAX_DECL_NAME` is dropped in favour of the
+ * occurrence numbers for its whole group (short, and they match the link
+ * syntax); any name still too long is cut by `capName`. Cross-group
+ * case-only clashes (trait `Seed` next to fn `seed` — one file on a
+ * case-insensitive filesystem) get their kind (`Seed (interface)`), and if
+ * that still does not split them, a short hash of their identity.
  */
-function buildDeclNameMap(symbols: SymbolInfo[], fileBasename: string): DeclNameMap {
+function buildDeclNameMap(symbols: SymbolInfo[], fileKey: string): DeclNameMap {
 	const byName = new Map<string, SymbolInfo[]>();
 	for (const s of symbols) {
 		const g = byName.get(s.name);
 		if (g) g.push(s);
 		else byName.set(s.name, [s]);
 	}
+	const seedOf = (s: SymbolInfo) => `${fileKey}#${s.name}#${s.occurrence}`;
 
 	const base = new Map<SymbolInfo, string>();
 	for (const [name, group] of byName) {
@@ -1228,69 +1525,61 @@ function buildDeclNameMap(symbols: SymbolInfo[], fileBasename: string): DeclName
 		}
 		for (const tied of tiedPairs(pairs)) applySignatureRung(tied);
 		for (const tied of tiedPairs(pairs)) applyOccurrenceRung(tied);
+		// A qualifier that would need cutting is no clearer than the
+		// occurrence number — use the numbers for the whole group instead.
+		if (name.length <= MAX_DECL_NAME && pairs.some(([, b]) => b.length > MAX_DECL_NAME)) {
+			pairs.forEach((pair, i) => (pair[1] = i === 0 ? name : `${name} ${pair[0].occurrence}`));
+		}
 		for (const [s, b] of pairs) base.set(s, b);
 	}
 
 	const out: DeclNameMap = new Map();
 	for (const s of symbols) {
-		let name = base.get(s)!;
-		let renamed = name !== s.name;
-		// Case-insensitive: `Client.canvas` and `client.canvas` are the same
-		// file on a case-insensitive filesystem.
-		if (name.toLowerCase() === fileBasename.toLowerCase()) {
-			name = `${name} (${s.kind})`;
-			renamed = true;
-		}
-		out.set(declKey(s), { name, renamed });
+		const name = capName(safeFileName(base.get(s)!), seedOf(s));
+		out.set(declKey(s), { name, renamed: name !== s.name });
 	}
 
-	// Cross-group case-only clashes (e.g. trait `Seed` next to a lone fn
-	// `seed` — different name groups, same file name on a case-insensitive
-	// filesystem): qualify with the container when that splits them.
+	// Cross-group case-only clashes: `Client` and `client` are one file on a
+	// case-insensitive filesystem.
 	const byLower = new Map<string, SymbolInfo[]>();
-	for (const s of symbols) {
-		const l = out.get(declKey(s))!.name.toLowerCase();
-		const g = byLower.get(l);
-		if (g) g.push(s);
-		else byLower.set(l, [s]);
-	}
+	for (const s of symbols) pushToMap(byLower, out.get(declKey(s))!.name.toLowerCase(), s);
 	for (const clash of byLower.values()) {
 		if (clash.length < 2) continue;
 		const taken = new Set([...out.values()].map((v) => v.name.toLowerCase()));
 		for (const s of clash) taken.delete(out.get(declKey(s))!.name.toLowerCase());
-		const trial = clash.map((s) => {
-			const cur = out.get(declKey(s))!.name;
-			return s.container && !cur.toLowerCase().startsWith(`${s.container.toLowerCase()}.`)
-				? `${s.container}.${cur}`
-				: cur;
-		});
+		const byKind = clash.map((s) => capName(`${out.get(declKey(s))!.name} (${s.kind})`, seedOf(s)));
 		const splits =
-			new Set(trial.map((t) => t.toLowerCase())).size === trial.length &&
-			trial.every((t) => !taken.has(t.toLowerCase()));
-		if (!splits) continue; // claimCanvasPath's "_" prefixes take over
-		clash.forEach((s, i) => out.set(declKey(s), { name: trial[i], renamed: true }));
+			new Set(byKind.map((t) => t.toLowerCase())).size === byKind.length &&
+			byKind.every((t) => !taken.has(t.toLowerCase()));
+		clash.forEach((s, i) => {
+			const cur = out.get(declKey(s))!.name;
+			const name = splits ? byKind[i] : capName(`${cur} ~${shortHash(seedOf(s))}`, seedOf(s));
+			out.set(declKey(s), { name, renamed: true });
+		});
 	}
 	return out;
 }
 
+function pushToMap<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+	const list = map.get(key);
+	if (list) list.push(value);
+	else map.set(key, [value]);
+}
+
 /**
- * Subflowcharts/<subpath>/<File>_codefile/<symbol>_symbol.canvas — one canvas
- * per declaration. The display name comes from `buildDeclNameMap` (same-name
- * ladder + " (kind)" basename suffix), with the `_symbol` granularity suffix
- * appended last.
+ * Subflowcharts/<subpath>/<stem>_codefile/<symbol>_symbol.canvas — one canvas
+ * per declaration. The display name comes from `buildDeclNameMap`, with the
+ * `_symbol` granularity suffix appended last.
  */
 function declCanvasPathFor(
-	outBase: string,
-	root: TFolder,
+	ctx: NamingContext,
 	file: TFile,
 	symbol: SymbolInfo,
 	names: DeclNameMap,
 ): { path: string; renamed: boolean } {
 	const entry = names.get(declKey(symbol)) ?? { name: symbol.name, renamed: false };
 	return {
-		path: normalizePath(
-			`${fileFolderFor(outBase, root, file).path}/${entry.name}${SUFFIX_SYMBOL}.canvas`,
-		),
+		path: normalizePath(`${fileFolderFor(ctx, file)}/${entry.name}${SUFFIX_SYMBOL}.canvas`),
 		renamed: entry.renamed,
 	};
 }
@@ -1304,7 +1593,8 @@ function declCanvasPathFor(
  * (Subflowcharts/ already *is* root's mirrored directory, so there's nothing
  * further to nest inside).
  */
-function folderCanvasPathFor(outBase: string, root: TFolder, folder: TFolder): string | null {
+function folderCanvasPathFor(ctx: NamingContext, folder: TFolder): string | null {
+	const { outBase, root } = ctx;
 	if (folder.path === root.path) {
 		return normalizePath(`${outBase}/Subflowcharts/${rootName(root)}${SUFFIX_SUBFOLDER}.canvas`);
 	}

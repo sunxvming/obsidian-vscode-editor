@@ -41,6 +41,14 @@ export interface SymbolInfo {
 	 */
 	container: string | null;
 	/**
+	 * The trait of the nearest enclosing `impl Trait for Type` block (Rust;
+	 * source text — display only, never a file name), null otherwise. Tells apart the inherent
+	 * `ContactReject::reason` from the `impl ClaimReject for ContactReject`
+	 * one, which share name and container — pointer files show it next to the
+	 * `#name#N` link.
+	 */
+	implTrait: string | null;
+	/**
 	 * Sanitized display types of the parameters, in order (functions only —
 	 * empty for other kinds). References/generics are flattened by
 	 * `displayType` (`&ReducerContext` → `ReducerContext`, `Vec<MultiShot>` →
@@ -268,7 +276,11 @@ export class SymbolResolver {
 			for (const node of nodes) {
 				const nameNode = extractSymbolName(node);
 				if (!nameNode) continue;
-				const name = nameNode.text;
+				const name = symbolNameText(nameNode);
+				// `const _: () = assert!(…);` — anonymous compile-time checks are
+				// not linkable (every one is `#_#N`), so they are not listed.
+				// findSymbol still resolves them if a link names one.
+				if (name === "_") continue;
 				const occurrence = (seen.get(name) ?? 0) + 1;
 				seen.set(name, occurrence);
 				const kind = typeMap.get(node.type)!;
@@ -280,6 +292,7 @@ export class SymbolResolver {
 					endLine: node.endPosition.row + 1,
 					occurrence,
 					container,
+					implTrait: extractImplTrait(node),
 					paramTypes: kind === "function" ? extractParamTypes(node) : [],
 				});
 			}
@@ -331,7 +344,7 @@ export class SymbolResolver {
 	private collectSymbolNodes(node: SyntaxNode, typeMap: Map<string, SymbolKind>, name: string | null, out: SyntaxNode[]): void {
 		if (typeMap.has(node.type)) {
 			const nameNode = extractSymbolName(node);
-			if (nameNode && (name === null || nameNode.text === name)) {
+			if (nameNode && (name === null || symbolNameText(nameNode) === name)) {
 				out.push(node);
 			}
 		}
@@ -365,6 +378,16 @@ function extractSymbolName(node: SyntaxNode): SyntaxNode | null {
 	return result;
 }
 
+/**
+ * A name node's link-safe text: Rust raw identifiers drop their `r#` prefix
+ * (`fn r#type` is linked as `#type` — a `#` inside the name would split the
+ * `#name#N` subpath).
+ */
+function symbolNameText(nameNode: SyntaxNode): string {
+	const t = nameNode.text;
+	return t.startsWith("r#") ? t.slice(2) : t;
+}
+
 function firstDescendantOfType(node: SyntaxNode, type: string): SyntaxNode | null {
 	for (const child of node.namedChildren) {
 		if (child.type === type) return child;
@@ -394,6 +417,19 @@ function extractContainer(node: SyntaxNode): string | null {
 		cur = cur.parent;
 	}
 	return parts.length > 0 ? parts.join(".") : null;
+}
+
+/** The trait of the nearest enclosing `impl Trait for Type` block (source text, whitespace collapsed), or null. */
+function extractImplTrait(node: SyntaxNode): string | null {
+	let cur = node.parent;
+	while (cur) {
+		if (cur.type === "impl_item") {
+			const t = cur.childForFieldName("trait");
+			return t ? t.text.replace(/\s+/g, " ").trim() : null;
+		}
+		cur = cur.parent;
+	}
+	return null;
 }
 
 /** The nearest enclosing `impl_item`'s target type, for resolving `Self`. */

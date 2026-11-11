@@ -128,6 +128,24 @@ plugin):
   one pass: code model → sub-flowcharts → aggregates → flows.
 - Node ids are deterministic and manual layouts are preserved on regeneration; stale generated
   canvases are pruned automatically (toggle in settings).
+- Canvas names are short and deterministic: same-named symbols get the twin of their link's
+  occurrence number (`reason 2_symbol.canvas` ↔ `[[file.rs#reason#2]]`) or a container
+  qualifier, names over 48 characters are cut and tagged with a short hash, and a file only gets
+  its extension in its folder name when a sibling shares its basename. When a canvas's name does
+  change, it is moved rather than regenerated, so layouts, include flags and flows.json entries
+  follow it.
+
+## Usage indexes ("Generate pointers in subfolders")
+
+Right-click a code folder ▸ **Generate pointers in subfolders** ▸ File / Symbol granularity
+writes a generated usage index (`<folder>.usages.md` by default — see the "Pointer file name"
+setting) into the folder and each subfolder down to the "Pointer subfolder depth". Every code
+file is listed in exactly one index. At symbol granularity each symbol is a ready-made
+`[[file#name]]` / `[[file#name#N]]` link with its kind, scope and line, followed by the code
+outside the index that uses it ("used by", tests collapsed) and — with the "Code sides" setting —
+the shared functions it calls ("uses shared"), so code on one side links to the shared crate
+whose own index lists every other user. Regenerate after renames; stale generated indexes are
+moved to the trash.
 
 ## Installation
 

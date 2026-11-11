@@ -1,83 +1,134 @@
 import { TFile, TFolder, normalizePath } from "obsidian";
 import CodeFilesPlugin from "./main";
-import { GENERATED_DIR_NAMES, SKIP_DIR_NAMES, buildFlowchartModel, collectCodeFiles } from "./flowchartModel";
+import { FlowchartFile, FlowchartModel, GENERATED_DIR_NAMES, SKIP_DIR_NAMES, buildFlowchartModel } from "./flowchartModel";
 import { isIgnoredFolderPath, parseIgnorePatterns } from "./folderIgnore";
-import { PointerUsage, PointerUsageIndex, collectPointerUsage, indexPointerUsage } from "./pointerConsumers";
+import { PointerUsage, collectVaultUsages, symbolKey, usagesInto, usagesOutOf } from "./pointerConsumers";
 import { SymbolInfo } from "./symbolResolver";
+import { CodeSide, joinWithAnd, parseCodeSides, sideOf } from "./flowchartSides";
 
 /**
- * Generated "pointer" files — the agnostic alternative to hand-maintained
- * per-doc file lists (e.g. the old "Code to read" column of the Description
- * docs' regeneration plan, which rotted every time a file was renamed).
+ * Generated "pointer" files — per-folder usage indexes, the agnostic
+ * alternative to hand-maintained per-doc file lists (which rot every time a
+ * file is renamed). Docs point at the generated files instead of naming code.
  *
  * `generatePointersInSubfolders(plugin, folder, extensions?, granularity?)`
- * writes one `pointers.md` into each eligible subfolder of `folder` down to
- * `settings.pointerSubfolderDepth` levels (default 1 = immediate subfolders
- * only; ignored folders are skipped at every level — see pointerConsumers.ts),
- * overwriting whatever is there. File granularity
- * writes one `## {file}` section per code file in the subfolder; symbol
- * granularity writes one `## {file}#{symbol}` section per linkable symbol
- * into the same `pointers.md` instead. Each section lists every code file (file granularity) or
- * symbol (symbol granularity) IN THE VAULT outside the subfolder that reads,
- * writes, or calls into it - annotated with how ("calls reducers
- * `report_movement` ...", "reads `PlayerData`", "binds
- * `nearby_remote_players`") in per-consumer "<usage> in [[file]]" phrasing
- * (per-consumer-symbol "<usage> in [[file#symbol]]" for symbol granularity).
+ * writes one index into `folder` and into each eligible subfolder down to
+ * `settings.pointerSubfolderDepth` levels (ignored folders are skipped at
+ * every level). **Every code file lands in exactly one index**: the one of
+ * its nearest indexed ancestor folder — so a parent's index lists only the
+ * files that no deeper index covers (plus links to those child indexes), and
+ * nothing is repeated level after level. A folder with no file of its own
+ * gets no index.
  *
- * Consumer detection reuses the flowchart model (buildFlowchartModel rooted
- * at the vault root): C# reducer calls / table reads / subscription strings,
- * Rust cross-file references and `ctx.db` reads/writes, and `.tscn` wiring.
- * Scenes inherit their attached scripts' usages one hop deep, marked
- * "(via [[Script.cs]])". Docs then point at the generated file instead of
- * naming files; symbol-level entry points stay discoverable via the
- * `[[file#` symbol suggest popover - just re-run the command after renames.
+ * The file is named by `settings.pointerFileName` (default
+ * `{folder}.usages.md`, see `pointerFileNameFor`), so every index has a
+ * distinct name in the quick switcher and in links. Generated indexes this
+ * run did not write (an old name, a folder that no longer qualifies, the
+ * legacy `pointers.md`) are moved to the trash — they carry the
+ * `POINTER_MARKER_PREFIX` comment, nothing else is touched.
  *
- * The pointer file is excluded from its own listing (no self-link),
- * as are the flowchart output trees and generated bindings (same skips as
- * the flowchart model, unless `includeGeneratedCodeFiles` opts back in).
- * Content is plain ASCII (no smart punctuation) so the files survive any
+ * Per code file one `## <file>` section, holding one bullet per entry:
+ * - file granularity: the file's link, then nested `used by` lines (one per
+ *   consumer file: "uses `place_player_at`, `reason#2`"),
+ * - symbol granularity: the file's link, then every linkable symbol in
+ *   document order as `[[file#name]]` / `[[file#name#N]]` (the Nth
+ *   same-named symbol — the same syntax every code link uses) with its kind,
+ *   scope (`in \`impl ClaimReject for ContactReject\``) and line, so
+ *   same-named symbols are told apart at a glance; nested `used by` lines per
+ *   consumer symbol ("calls reducer", "reads table `player`", "binds", ...).
+ * "Outside" means outside this index's own files. With `settings.codeSides`,
+ * consumers on another side than the target are labelled with their side,
+ * targets linked into the code of two or more other sides get a
+ * `**shared between …**` line and a summary list at the top, and code on a
+ * side lists the **shared code** (files on no side — the shared crates) it
+ * uses directly (`uses shared`). That closes the loop for server code that no
+ * client calls directly but that runs the same shared-crate logic as the
+ * client: the server symbol points at the shared crate, and the shared
+ * crate's own index lists every user on every side.
+ *
+ * Usage detection reuses the flowchart model (buildFlowchartModel rooted at
+ * the vault root, see pointerConsumers.ts). Flowchart output trees,
+ * generated bindings (by folder name or by their "AUTOMATICALLY GENERATED"
+ * banner, unless `includeGeneratedCodeFiles`) and ignored folders are neither
+ * indexed nor listed as users. Content is plain ASCII so the files survive any
  * editor/encoding round-trip.
  */
 
-export const POINTER_FILENAME = "pointers.md";
-/** Leftover filename from before symbol granularity shared `pointers.md` — never written, only excluded from listings. */
+/** Pre-`pointerFileName` name of every index; still recognised (and cleaned up) as generated. */
+export const LEGACY_POINTER_FILENAME = "pointers.md";
+/** Even older name from before symbol granularity shared one file. */
 const LEGACY_POINTER_SYMBOLS_FILENAME = "pointers-symbols.md";
+/** Default `settings.pointerFileName`. */
+export const DEFAULT_POINTER_FILE_NAME = "{folder}.usages.md";
 
-export const POINTER_MARKER =
-	"<!-- generated by vscode-editor: do not hand-edit - regenerate via \"Generate pointers in subfolders\" -->";
-export const POINTER_SYMBOLS_MARKER =
-	"<!-- generated by vscode-editor: do not hand-edit - regenerate via \"Generate pointers in subfolders > Symbol granularity\" -->";
+/** Every generated index starts with a comment beginning like this — the cleanup's only proof of ownership. */
+export const POINTER_MARKER_PREFIX = "<!-- generated by vscode-editor";
 
 /** Output granularity for generated pointer files: file-level or symbol-level. */
 export type PointerGranularity = "file" | "symbol";
+
+const COMMAND_NAME: Record<PointerGranularity, string> = {
+	file: "Generate pointers in subfolders > File granularity",
+	symbol: "Generate pointers in subfolders > Symbol granularity",
+};
 
 export interface PointerTargetResult {
 	folder: string;
 	pointer: string;
 	granularity: PointerGranularity;
 	fileCount: number;
-	/** Distinct outside files detected using this folder's code. */
+	/** Distinct outside files detected using this index's code. */
 	consumerCount: number;
-	/** Symbol granularity only: in-folder symbols indexed. */
+	/** Symbol granularity only: symbols indexed. */
 	symbolCount?: number;
-	/** Symbol granularity only: distinct outside symbols detected using this folder's code. */
+	/** Symbol granularity only: distinct outside symbols detected using this index's code. */
 	consumerSymbolCount?: number;
+	/** Distinct shared-code symbols this index's code uses (needs `settings.codeSides`). */
+	sharedUseCount: number;
 }
 
 export interface PointerResult {
 	targets: PointerTargetResult[];
 	/** Vault paths written (created or overwritten). */
 	written: string[];
-	/** Targets that held no code files (still written, with an empty note). */
+	/** Always empty now — folders without code files of their own get no index. Kept for API compatibility. */
 	empty: string[];
+	/** Stale generated indexes moved to the trash (old file name, folder no longer indexed). */
+	removed: string[];
 }
 
-/** Subfolder predicate shared by the target walk (skips output/dot/ignored dirs). */
-function isPointerTargetFolder(
-	child: TFolder,
-	includeGenerated: boolean,
-	ignoredFolders: string[],
-): boolean {
+/** Folder names too generic to name an index on their own — they get their parent's name in front. */
+const GENERIC_FOLDER_NAMES = new Set(["src", "source", "lib", "tests", "test", "examples", "benches", "bin", "scripts"]);
+
+/** `movement` → `movement`; `region/src` → `region-src`; the vault root → the vault name. */
+export function folderLabel(folder: TFolder, vaultName: string): string {
+	if (folder.path === "/" || !folder.name) return vaultName || "vault";
+	if (GENERIC_FOLDER_NAMES.has(folder.name.toLowerCase()) && folder.parent && folder.parent.path !== "/") {
+		return `${folder.parent.name}-${folder.name}`;
+	}
+	return folder.name;
+}
+
+/** The usable `pointerFileName` template: no folder separators, `.md` ensured, default when blank. */
+export function normalizePointerFileName(value: unknown): string {
+	const raw = typeof value === "string" ? value.trim() : "";
+	if (!raw || /[\\/]/.test(raw)) return DEFAULT_POINTER_FILE_NAME;
+	return raw.toLowerCase().endsWith(".md") ? raw : `${raw}.md`;
+}
+
+/** The index file name for `folder` (`{folder}` → `folderLabel`). */
+export function pointerFileNameFor(folder: TFolder, template: string, vaultName: string): string {
+	return normalizePointerFileName(template).split("{folder}").join(folderLabel(folder, vaultName).replace(/[\\/:*?"<>|#^[\]]/g, "-"));
+}
+
+/** Matches every name the template can produce (for the stale-index cleanup). */
+function pointerFileNamePattern(template: string): RegExp {
+	const parts = normalizePointerFileName(template).split("{folder}").map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+	return new RegExp(`^${parts.join(".+")}$`, "i");
+}
+
+/** Subfolder predicate shared by the target walk and the cleanup (skips output/dot/ignored dirs). */
+function isPointerTargetFolder(child: TFolder, includeGenerated: boolean, ignoredFolders: string[]): boolean {
 	if (child.name.startsWith(".")) return false;
 	if (SKIP_DIR_NAMES.has(child.name)) return false;
 	if (!includeGenerated && GENERATED_DIR_NAMES.has(child.name)) return false;
@@ -88,9 +139,9 @@ function isPointerTargetFolder(
 /**
  * Subfolders eligible for pointer generation: the immediate subfolders of
  * `folder` (skips output/dot/ignored dirs), plus their subfolders when
- * `maxDepth` > 1 — one `pointers.md` per eligible folder down to that many
- * levels. Ignored folders are skipped at every level and never descended
- * into, so nothing under them is ever written.
+ * `maxDepth` > 1. Ignored folders are skipped at every level and never
+ * descended into, so nothing under them is ever written. (`folder` itself is
+ * always indexed too — for the files directly in it.)
  */
 export function pointerTargetFolders(
 	folder: TFolder,
@@ -112,29 +163,94 @@ export function pointerTargetFolders(
 	return out;
 }
 
-/** `[[path|alias]]` wikilink. */
+/** Settings value → usable subfolder depth (integer, 1..16; invalid/absent = 1). */
+export function normalizePointerDepth(value: unknown): number {
+	const n = typeof value === "number" ? value : Number(value);
+	if (!Number.isFinite(n) || n < 1) return 1;
+	return Math.min(Math.floor(n), 16);
+}
+
+// ---------- rendering ----------
+
+/** One index: a folder and the code files it covers. */
+interface PointerGroup {
+	folder: TFolder;
+	files: FlowchartFile[];
+	/** Nearest descendant groups that have their own index (linked from this one). */
+	children: PointerGroup[];
+	path: string;
+}
+
+interface RenderContext {
+	commandFolder: TFolder;
+	sides: CodeSide[];
+	granularity: PointerGranularity;
+}
+
+/** `[[path|alias]]`, or plain `[[path]]` when the alias would just repeat the path. */
 function link(path: string, alias: string): string {
-	return `[[${path}|${alias}]]`;
+	return alias === path ? `[[${path}]]` : `[[${path}|${alias}]]`;
 }
 
-/**
- * Display alias for a consumer file: relative to the command folder when the
- * file lives under it (disambiguates same-basename siblings like
- * `status/reducers.rs`), otherwise the full vault path.
- */
-function consumerAlias(path: string, commandFolder: TFolder): string {
+const TEST_SEGMENTS = new Set(["tests", "test", "benches"]);
+
+/** Test code: a file under a `tests`/`test`/`benches` folder or named `tests.rs`, or a symbol inside a `mod tests`. */
+function isTestCode(path: string, sym: SymbolInfo | null | undefined): boolean {
+	const segs = path.split("/");
+	const base = (segs.pop() ?? "").replace(/\.[^.]*$/, "");
+	if (TEST_SEGMENTS.has(base.toLowerCase()) || segs.some((s) => TEST_SEGMENTS.has(s.toLowerCase()))) return true;
+	return !!sym?.container && sym.container.split(".").some((s) => TEST_SEGMENTS.has(s.toLowerCase()));
+}
+
+/** `#name`, or `#name#N` for the Nth same-named symbol in a file. */
+function subpathOf(sym: SymbolInfo): string {
+	return sym.occurrence > 1 ? `#${sym.name}#${sym.occurrence}` : `#${sym.name}`;
+}
+
+/** Display alias for any file: relative to the command folder when under it, else the vault path. */
+function aliasFor(path: string, commandFolder: TFolder): string {
 	const prefix = commandFolder.path === "/" ? "" : `${commandFolder.path}/`;
-	return path.startsWith(prefix) ? path.slice(prefix.length) : path;
+	return prefix && path.startsWith(prefix) ? path.slice(prefix.length) : path;
 }
 
-/** Alias for an in-folder file: path relative to its target folder. */
-function fileAlias(file: TFile, folder: TFolder): string {
+/** Alias for a file inside a group: relative to the group's folder. */
+function localAlias(file: TFile, folder: TFolder): string {
 	const prefix = folder.path === "/" ? "" : `${folder.path}/`;
-	const rel = file.path.startsWith(prefix) ? file.path.slice(prefix.length) : file.path;
-	return rel;
+	return file.path.startsWith(prefix) ? file.path.slice(prefix.length) : file.path;
 }
 
-/** Singular/plural noun for a verb phrase, by name count. */
+function symbolLink(path: string, sym: SymbolInfo | null | undefined, alias: string): string {
+	return sym ? link(`${path}${subpathOf(sym)}`, `${alias}${subpathOf(sym)}`) : link(path, alias);
+}
+
+function kindLabel(sym: SymbolInfo, extension: string): string {
+	switch (sym.kind) {
+		case "function":
+			return "fn";
+		case "variable":
+			return extension === "cs" ? "field" : "const";
+		case "interface":
+			return extension === "rs" ? "trait" : "interface";
+		default:
+			return sym.kind;
+	}
+}
+
+/** `fn in \`impl ClaimReject for ContactReject\`, line 107` */
+function symbolDetail(sym: SymbolInfo, extension: string): string {
+	let scope = "";
+	if (sym.implTrait) scope = ` in \`impl ${sym.implTrait}${sym.container ? ` for ${sym.container}` : ""}\``;
+	else if (sym.container) scope = ` in \`${sym.container}\``;
+	return `${kindLabel(sym, extension)}${scope}, line ${sym.startLine}`;
+}
+
+/** A usage's name as written in a phrase: `reason#2` when the target is the 2nd `reason`. */
+function usageName(u: PointerUsage): string {
+	if (u.targetSym && u.name === u.targetSym.name) return `${u.name}${u.targetSym.occurrence > 1 ? `#${u.targetSym.occurrence}` : ""}`;
+	return u.name;
+}
+
+/** Singular/plural verb phrase by name count. */
 function verbPhrase(verb: string, count: number): string {
 	if (count === 1) return verb;
 	switch (verb) {
@@ -151,339 +267,525 @@ function verbPhrase(verb: string, count: number): string {
 		case "declares module":
 			return "declares modules";
 		default:
-			return verb; // reads / writes / subscribes to / uses / imports / binds
+			return verb; // reads / writes / subscribes to / uses / imports / binds / includes
 	}
 }
 
 /**
- * Renders one consumer's usage list as phrase segments joined by "; " —
- * usages are grouped by (verb, via) so a scene's inherited entries read
- * "calls reducers `a`, `b` (via [[Script.cs|Script.cs]])".
+ * One consumer's usages as phrases joined by "; ", grouped by (verb, via):
+ * "calls reducers `a`, `b` (via [[Script.cs]])". With `omitName`, a name
+ * equal to the target symbol itself is left out (the parent bullet already
+ * names it): "uses", "reads table `player`".
  */
-function usagePhrases(usages: PointerUsage[], commandFolder: TFolder): string {
-	const groups = new Map<string, { verb: string; via?: TFile; names: Set<string> }>();
-	for (const u of usages) {
-		const key = `${u.verb}|${u.via?.path ?? ""}`;
-		let g = groups.get(key);
-		if (!g) groups.set(key, (g = { verb: u.verb, via: u.via, names: new Set() }));
-		g.names.add(u.name);
-	}
-	const parts: string[] = [];
-	for (const g of [...groups.values()].sort((a, b) => a.verb.localeCompare(b.verb))) {
-		const names = [...g.names].sort((a, b) => a.localeCompare(b));
-		let part = `${verbPhrase(g.verb, names.length)} ${names.map((n) => `\`${n}\``).join(", ")}`;
-		if (g.via) part += ` (via ${link(g.via.path, consumerAlias(g.via.path, commandFolder))})`;
-		parts.push(part);
-	}
-	return parts.join("; ");
-}
-
-function sortedKeys<V>(map: Map<string, V>): string[] {
-	return [...map.keys()].sort((a, b) => a.localeCompare(b));
-}
-
-/**
- * Markdown for one pointer file: header + marker + source note, then one
- * `## {file}` section per in-folder code file with its consumer entries
- * directly underneath ("<usage> in [[file]]" per-consumer phrasing).
- */
-export function pointerMarkdown(
-	folder: TFolder,
-	files: TFile[],
-	usage: PointerUsageIndex,
-	commandFolder: TFolder,
-): string {
-	const lines: string[] = [];
-	const consumerCount = usage.byConsumer.size;
-	lines.push(`# Pointers - ${folder.name}`);
-	lines.push("");
-	lines.push(POINTER_MARKER);
-	lines.push("");
-	lines.push(
-		`> Generated index of the ${files.length} code file(s) under \`${folder.path}\` ` +
-			`and the ${consumerCount} vault file(s) outside it that read, write, or call into them. ` +
-			`Do not hand-edit - re-run "Generate pointers in subfolders" on the parent folder after renames. ` +
-			`Doc authors: start here, then use the \`[[file#\` symbol suggest for entry points.`,
-	);
-	lines.push("");
-	if (files.length === 0) {
-		lines.push("_No code files with the enabled extensions under this folder._");
-		lines.push("");
-	} else {
-		const sorted = [...files].sort((a, b) => fileAlias(a, folder).localeCompare(fileAlias(b, folder)));
-		for (const file of sorted) {
-			const alias = fileAlias(file, folder);
-			lines.push(`## ${alias}`);
-			lines.push("");
-			const consumers = usage.byTarget.get(file.path);
-			if (!consumers || consumers.size === 0) {
-				lines.push("_No vault code outside this folder uses this file._");
-			} else {
-				for (const consumerPath of sortedKeys(consumers)) {
-					const list = consumers.get(consumerPath)!;
-					lines.push(
-						`- ${link(consumerPath, consumerAlias(consumerPath, commandFolder))} - ${usagePhrases(list, commandFolder)} in ${link(file.path, alias)}`,
-					);
-				}
-			}
-			lines.push("");
-		}
-	}
-	return lines.join("\n");
-}
-
-/** `#name` subpath for a symbol (`#name#N` when the occurrence disambiguates). */
-function symbolSubpath(sym: SymbolInfo): string {
-	return sym.occurrence > 1 ? `#${sym.name}#${sym.occurrence}` : `#${sym.name}`;
-}
-
-/** Identity key for a target/consumer symbol (`name#occurrence`, "" for whole-file). */
-function symbolIdentity(sym: SymbolInfo | null | undefined): string {
-	return sym ? `${sym.name}#${sym.occurrence}` : "";
-}
-
-/** `[[path#sym|alias#sym]]` wikilink (plain file link when `sym` is null). */
-function symbolLink(path: string, sym: SymbolInfo | null | undefined, baseAlias: string): string {
-	if (!sym) return link(path, baseAlias);
-	const sub = symbolSubpath(sym);
-	return link(`${path}${sub}`, `${baseAlias}${sub}`);
-}
-
-/** Alias for a consumer symbol: file alias relative to the command folder plus `#sym`. */
-function consumerSymbolAlias(
-	consumerPath: string,
-	consumerSym: SymbolInfo | null | undefined,
-	commandFolder: TFolder,
-): string {
-	return symbolLink(consumerPath, consumerSym, consumerAlias(consumerPath, commandFolder));
-}
-
-/**
- * Renders one consumer symbol's usage list as phrase segments joined by "; " —
- * grouped by (verb, via, viaSym) so a scene's inherited entries read
- * "uses `x` (via [[Script.cs#fn]])". The trailing `in [[target]]` is added by
- * the caller (it differs per section).
- */
-function symbolUsagePhrases(usages: PointerUsage[], commandFolder: TFolder): string {
+function usagePhrases(usages: PointerUsage[], ctx: RenderContext, omitName: string | null): string {
 	const groups = new Map<string, { verb: string; via?: TFile; viaSym?: SymbolInfo | null; names: Set<string> }>();
 	for (const u of usages) {
-		const key = `${u.verb}|${u.via?.path ?? ""}|${symbolIdentity(u.viaSym)}`;
+		const key = `${u.verb}|${u.via?.path ?? ""}|${ctx.granularity === "symbol" ? symbolKey(u.viaSym) : ""}`;
 		let g = groups.get(key);
 		if (!g) groups.set(key, (g = { verb: u.verb, via: u.via, viaSym: u.viaSym, names: new Set() }));
-		g.names.add(u.name);
+		const name = usageName(u);
+		if (name !== omitName) g.names.add(name);
 	}
 	const parts: string[] = [];
 	for (const g of [...groups.values()].sort((a, b) => a.verb.localeCompare(b.verb))) {
 		const names = [...g.names].sort((a, b) => a.localeCompare(b));
-		let part = `${verbPhrase(g.verb, names.length)} ${names.map((n) => `\`${n}\``).join(", ")}`;
-		if (g.via) part += ` (via ${symbolLink(g.via.path, g.viaSym, consumerAlias(g.via.path, commandFolder))})`;
+		let part = names.length > 0 ? `${verbPhrase(g.verb, names.length)} ${names.map((n) => `\`${n}\``).join(", ")}` : g.verb;
+		if (g.via) {
+			const viaLink =
+				ctx.granularity === "symbol"
+					? symbolLink(g.via.path, g.viaSym, aliasFor(g.via.path, ctx.commandFolder))
+					: link(g.via.path, aliasFor(g.via.path, ctx.commandFolder));
+			part += ` (via ${viaLink})`;
+		}
 		parts.push(part);
 	}
-	return parts.join("; ");
-}
-
-export interface SymbolSectionTarget {
-	file: TFile;
-	alias: string;
-	sym: SymbolInfo | null;
+	// A bare "uses" is the default reading of "used by" — say nothing.
+	return [...new Set(parts)].filter((p) => p !== "uses").join("; ");
 }
 
 /**
- * Markdown for one symbol-granularity pointer file: header + marker + source
- * note, then one `## {file}#{symbol}` section per in-folder symbol (plus one
- * `## {file}` whole-file section per file holding whole-file-targeted usages
- * or no symbols at all) with its consumer *symbol* entries directly
- * underneath ("<usage> in [[file#symbol]]" per-consumer-symbol phrasing).
- *
- * `symbolsByPath` maps in-folder file paths to their linkable symbols in
- * document order (from the shared vault-wide flowchart model); `usages` is the
- * raw `collectPointerUsage` list for the target folder.
+ * Verbs that mean the consumer's own code links the target in (a call, a
+ * type, an import, a splice) — as opposed to `calls reducer` / `reads` /
+ * `subscribes to`, which reach it over the network. Only these make a symbol
+ * "shared" between code sides, and only these count as "uses shared".
  */
-export function pointerSymbolsMarkdown(
-	folder: TFolder,
-	files: TFile[],
-	usages: PointerUsage[],
-	symbolsByPath: Map<string, SymbolInfo[]>,
-	commandFolder: TFolder,
-): string {
-	const lines: string[] = [];
-	const consumerFiles = new Set(usages.map((u) => u.consumer.path));
-	const consumerSyms = new Set(
-		usages.map((u) => `${u.consumer.path}|${symbolIdentity(u.consumerSym)}`),
-	);
-	// Only the target folder's own symbols — `symbolsByPath` is the vault-wide
-	// map, so summing it would report every symbol in the vault.
-	const symbolCount = files.reduce((a, f) => a + (symbolsByPath.get(f.path)?.length ?? 0), 0);
-	lines.push(`# Pointers (symbols) - ${folder.name}`);
-	lines.push("");
-	lines.push(POINTER_SYMBOLS_MARKER);
-	lines.push("");
-	lines.push(
-		`> Generated symbol-level index of the ${symbolCount} symbol(s) in ${files.length} code file(s) under \`${folder.path}\` ` +
-			`and the ${consumerSyms.size} vault symbol(s) in ${consumerFiles.size} file(s) outside it that read, write, or call into them. ` +
-			`Do not hand-edit - re-run "Generate pointers in subfolders > Symbol granularity" on the parent folder after renames. ` +
-			`Links use \`[[file#symbol]]\` subpaths - open one for the narrowed entry point.`,
-	);
-	lines.push("");
-	if (files.length === 0) {
-		lines.push("_No code files with the enabled extensions under this folder._");
-		lines.push("");
-	} else {
-		// Group usages by target symbol: `${filePath}|${name}#${occurrence}`.
-		const byTargetSym = new Map<string, PointerUsage[]>();
-		for (const u of usages) {
-			const key = `${u.target.path}|${symbolIdentity(u.targetSym)}`;
-			const group = byTargetSym.get(key) ?? [];
-			group.push(u);
-			byTargetSym.set(key, group);
-		}
-		const sorted = [...files].sort((a, b) => fileAlias(a, folder).localeCompare(fileAlias(b, folder)));
-		for (const file of sorted) {
-			const alias = fileAlias(file, folder);
-			const symbols = symbolsByPath.get(file.path) ?? [];
-			if (symbols.length === 0) {
-				// Symbol-less file (tscn, no linkable symbols): whole-file section.
-				lines.push(`## ${alias}`);
-				lines.push("");
-				const list = byTargetSym.get(`${file.path}|`) ?? [];
-				if (list.length === 0) {
-					lines.push("_No vault code outside this folder uses this file._");
-				} else {
-					emitSymbolConsumerLines(lines, list, file.path, alias, null, commandFolder);
-				}
-				lines.push("");
-				continue;
-			}
-			for (const sym of symbols) {
-				const heading = `${alias}${symbolSubpath(sym)}`;
-				lines.push(`## ${heading}`);
-				lines.push("");
-				const list = byTargetSym.get(`${file.path}|${symbolIdentity(sym)}`) ?? [];
-				if (list.length === 0) {
-					lines.push("_No vault code outside this folder uses this symbol._");
-				} else {
-					emitSymbolConsumerLines(lines, list, file.path, alias, sym, commandFolder);
-				}
-				lines.push("");
-			}
-			// Whole-file-targeted usages against a file that does have symbols
-			// (e.g. a scene instancing it): keep them under a whole-file section
-			// so they are not silently dropped.
-			const whole = byTargetSym.get(`${file.path}|`) ?? [];
-			if (whole.length > 0) {
-				lines.push(`## ${alias}`);
-				lines.push("");
-				emitSymbolConsumerLines(lines, whole, file.path, alias, null, commandFolder);
-				lines.push("");
-			}
-		}
-	}
-	return lines.join("\n");
+const CODE_LEVEL_VERBS = new Set(["uses", "imports", "includes"]);
+
+/** One side's share of a target's code-level consumers. */
+interface SideShare {
+	side: string;
+	files: Set<string>;
+	symbols: Set<string>;
 }
 
-/** One bullet per (consumer file, consumer symbol), sorted for stable output. */
-function emitSymbolConsumerLines(
-	lines: string[],
-	list: PointerUsage[],
-	targetPath: string,
-	targetAlias: string,
-	targetSym: SymbolInfo | null,
-	commandFolder: TFolder,
-): void {
-	// Group by consumer symbol so one fn using one target reads as one bullet.
-	const byConsumerSym = new Map<string, PointerUsage[]>();
-	for (const u of list) {
-		const key = `${u.consumer.path}|${symbolIdentity(u.consumerSym)}`;
-		const group = byConsumerSym.get(key) ?? [];
-		group.push(u);
-		byConsumerSym.set(key, group);
+/**
+ * The sides (other than the target's own) whose code links the target in,
+ * when there are at least two of them — null otherwise. Consumers on no side
+ * are ignored. Ordered as configured.
+ */
+function sharedSides(usages: PointerUsage[], targetPath: string, sides: CodeSide[]): SideShare[] | null {
+	if (sides.length === 0) return null;
+	const own = sideOf(targetPath, sides);
+	const bySide = new Map<string, SideShare>();
+	for (const u of usages) {
+		if (!CODE_LEVEL_VERBS.has(u.verb)) continue;
+		const side = sideOf(u.consumer.path, sides);
+		if (!side || side === own) continue;
+		let s = bySide.get(side);
+		if (!s) bySide.set(side, (s = { side, files: new Set(), symbols: new Set() }));
+		s.files.add(u.consumer.path);
+		s.symbols.add(`${u.consumer.path}|${symbolKey(u.consumerSym)}`);
 	}
-	const target = symbolLink(targetPath, targetSym, targetAlias);
-	for (const key of [...byConsumerSym.keys()].sort((a, b) => a.localeCompare(b))) {
-		const group = byConsumerSym.get(key)!;
+	if (bySide.size < 2) return null;
+	const rank = (name: string) => {
+		const i = sides.findIndex((s) => s.name === name);
+		return i < 0 ? Number.MAX_SAFE_INTEGER : i;
+	};
+	return [...bySide.values()].sort((a, b) => rank(a.side) - rank(b.side) || a.side.localeCompare(b.side));
+}
+
+function plural(n: number, one: string, many: string): string {
+	return `${n} ${n === 1 ? one : many}`;
+}
+
+/** `**shared between server and client** - used by 3 symbols in 1 file on the server and …` */
+function sharedLine(shares: SideShare[], granularity: PointerGranularity): string {
+	const parts = shares.map((s) =>
+		granularity === "symbol"
+			? `${plural(s.symbols.size, "symbol", "symbols")} in ${plural(s.files.size, "file", "files")} on the ${s.side}`
+			: `${plural(s.files.size, "file", "files")} on the ${s.side}`,
+	);
+	return `**shared between ${joinWithAnd(shares.map((s) => s.side))}** - used by ${joinWithAnd(parts)}`;
+}
+
+/** ` (client)` when the consumer sits on a side other than the target's. */
+function sideTag(consumerPath: string, targetPath: string, sides: CodeSide[]): string {
+	if (sides.length === 0) return "";
+	const c = sideOf(consumerPath, sides);
+	return c && c !== sideOf(targetPath, sides) ? ` (${c})` : "";
+}
+
+/** Groups items by a string key, keys sorted. */
+function groupBy<T>(items: T[], key: (t: T) => string): [string, T[]][] {
+	const map = new Map<string, T[]>();
+	for (const item of items) {
+		const k = key(item);
+		const list = map.get(k);
+		if (list) list.push(item);
+		else map.set(k, [item]);
+	}
+	return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+/** Max test files linked on a collapsed "used by tests" line. */
+const MAX_TEST_LINKS = 5;
+
+/**
+ * Nested `used by` lines for one target (a file, or one symbol at symbol
+ * granularity): one per consumer (symbol), except test code, which is
+ * collapsed into one `used by tests in …` line per target.
+ */
+function emitUsedBy(lines: string[], usages: PointerUsage[], targetPath: string, omitName: string | null, ctx: RenderContext): void {
+	const symbolMode = ctx.granularity === "symbol";
+	const tests = usages.filter((u) => isTestCode(u.consumer.path, u.consumerSym));
+	const code = usages.filter((u) => !isTestCode(u.consumer.path, u.consumerSym));
+	// Same-side users first, then each other side in configured order.
+	const rank = (path: string) => {
+		const side = ctx.sides.length > 0 ? sideOf(path, ctx.sides) : null;
+		if (side === null || side === sideOf(targetPath, ctx.sides)) return 0;
+		return 1 + ctx.sides.findIndex((s) => s.name === side);
+	};
+	const byConsumer = (
+		symbolMode
+			? groupBy(code, (u) => `${u.consumer.path}|${symbolKey(u.consumerSym)}`)
+			: groupBy(code, (u) => u.consumer.path)
+	).sort((a, b) => rank(a[1][0].consumer.path) - rank(b[1][0].consumer.path) || a[0].localeCompare(b[0]));
+	for (const [, group] of byConsumer) {
 		const first = group[0];
+		const who = symbolMode
+			? symbolLink(first.consumer.path, first.consumerSym, aliasFor(first.consumer.path, ctx.commandFolder))
+			: link(first.consumer.path, aliasFor(first.consumer.path, ctx.commandFolder));
+		const phrases = usagePhrases(group, ctx, omitName);
+		lines.push(`\t- used by ${who}${sideTag(first.consumer.path, targetPath, ctx.sides)}${phrases ? ` - ${phrases}` : ""}`);
+	}
+	if (tests.length > 0) {
+		const files = groupBy(tests, (u) => u.consumer.path);
+		const shown = files
+			.slice(0, MAX_TEST_LINKS)
+			.map(([path]) => link(path, aliasFor(path, ctx.commandFolder)));
+		const more = files.length > MAX_TEST_LINKS ? ` and ${files.length - MAX_TEST_LINKS} more` : "";
+		const count = symbolMode ? `${plural(new Set(tests.map((u) => `${u.consumer.path}|${symbolKey(u.consumerSym)}`)).size, "test", "tests")} in ` : "tests in ";
+		lines.push(`\t- used by ${count}${shown.join(", ")}${more}`);
+	}
+}
+
+/** Nested `uses shared` lines: the shared-code targets one file/symbol links in. */
+function emitUsesShared(lines: string[], usages: PointerUsage[], ctx: RenderContext): void {
+	if (ctx.granularity === "symbol") {
+		for (const [, group] of groupBy(usages, (u) => `${u.target.path}|${symbolKey(u.targetSym)}`)) {
+			const t = group[0];
+			const verbs = [...new Set(group.map((u) => u.verb))].filter((v) => v !== "uses").sort();
+			// The scope tells same-named targets apart (`pos.rs#new` vs `#new#2`).
+			const scope = t.targetSym?.container ? ` in \`${t.targetSym.container}\`` : "";
+			lines.push(
+				`\t- uses shared ${symbolLink(t.target.path, t.targetSym, aliasFor(t.target.path, ctx.commandFolder))}${scope}` +
+					(verbs.length > 0 ? ` - ${verbs.join(", ")}` : ""),
+			);
+		}
+		return;
+	}
+	for (const [, group] of groupBy(usages, (u) => u.target.path)) {
+		const t = group[0];
+		const names = [...new Set(group.map(usageName))].sort((a, b) => a.localeCompare(b));
 		lines.push(
-			`- ${consumerSymbolAlias(first.consumer.path, first.consumerSym, commandFolder)} - ${symbolUsagePhrases(group, commandFolder)} in ${target}`,
+			`\t- uses shared ${link(t.target.path, aliasFor(t.target.path, ctx.commandFolder))} - ${names.map((n) => `\`${n}\``).join(", ")}`,
 		);
 	}
 }
 
-/** Settings value → usable subfolder depth (integer, 1..16; invalid/absent = 1). */
-export function normalizePointerDepth(value: unknown): number {
-	const n = typeof value === "number" ? value : Number(value);
-	if (!Number.isFinite(n) || n < 1) return 1;
-	return Math.min(Math.floor(n), 16);
+interface GroupStats {
+	consumerFiles: number;
+	consumerSymbols: number;
+	symbolCount: number;
+	sharedUses: number;
 }
 
 /**
- * Writes pointer files into each eligible subfolder of `folder` down to
- * `settings.pointerSubfolderDepth` levels (default 1 = immediate subfolders),
- * or into `folder` itself when it has no eligible subfolders, so the command
- * also works on a single module folder. Ignored folders are skipped at every
- * level. Consumer detection builds one flowchart model rooted at the vault
- * root and shares it across all targets.
- * Serialized by the caller via `runExclusive` — vault writes must not
- * overlap.
- *
- * Both granularities write the same `pointers.md` (overwriting it):
- * `"file"` (default) writes one `## {file}` section per code file,
- * `"symbol"` writes one `## {file}#{symbol}` section per linkable symbol.
+ * Markdown for one index. `incoming` are the usages of the group's code from
+ * outside it, `outgoing` the group's own uses of shared code.
  */
+function renderGroup(
+	group: PointerGroup,
+	incoming: PointerUsage[],
+	outgoing: PointerUsage[],
+	ctx: RenderContext,
+	vaultName: string,
+): { content: string; stats: GroupStats } {
+	const symbolMode = ctx.granularity === "symbol";
+	const files = [...group.files].sort((a, b) => localAlias(a.file, group.folder).localeCompare(localAlias(b.file, group.folder)));
+	const symbolCount = files.reduce((a, ff) => a + ff.symbols.length, 0);
+	const keyOf = (path: string, sym: SymbolInfo | null | undefined) => `${path}|${symbolMode ? symbolKey(sym) : ""}`;
+	const inByKey = new Map<string, PointerUsage[]>();
+	for (const u of incoming) {
+		const k = keyOf(u.target.path, u.targetSym);
+		const l = inByKey.get(k);
+		if (l) l.push(u);
+		else inByKey.set(k, [u]);
+	}
+	const outByKey = new Map<string, PointerUsage[]>();
+	for (const u of outgoing) {
+		const k = keyOf(u.consumer.path, u.consumerSym);
+		const l = outByKey.get(k);
+		if (l) l.push(u);
+		else outByKey.set(k, [u]);
+	}
+
+	// Targets linked into the code of two or more other sides.
+	const shares = new Map<string, SideShare[]>();
+	const sharedItems: string[] = [];
+	for (const ff of files) {
+		const alias = localAlias(ff.file, group.folder);
+		const entries: (SymbolInfo | null)[] = symbolMode ? [null, ...ff.symbols] : [null];
+		for (const sym of entries) {
+			const k = keyOf(ff.file.path, sym);
+			const s = sharedSides(inByKey.get(k) ?? [], ff.file.path, ctx.sides);
+			if (!s) continue;
+			shares.set(k, s);
+			sharedItems.push(`- ${symbolLink(ff.file.path, sym, alias)} - ${s.map((x) => x.side).join(", ")}`);
+		}
+	}
+
+	const lines: string[] = [];
+	const title = folderLabel(group.folder, vaultName);
+	lines.push(`# ${title} usages${symbolMode ? " (symbols)" : ""}`);
+	lines.push("");
+	lines.push(
+		`${POINTER_MARKER_PREFIX}: do not hand-edit - regenerate via "${COMMAND_NAME[ctx.granularity]}" on ${ctx.commandFolder.path === "/" ? "the vault root" : ctx.commandFolder.path} -->`,
+	);
+	lines.push("");
+	const consumerFiles = new Set(incoming.map((u) => u.consumer.path));
+	const consumerSymbols = new Set(incoming.map((u) => `${u.consumer.path}|${symbolKey(u.consumerSym)}`));
+	const sharedTargets = new Set(outgoing.map((u) => `${u.target.path}|${symbolKey(u.targetSym)}`));
+	const scope =
+		`${plural(files.length, "code file", "code files")} under \`${group.folder.path === "/" ? "/" : group.folder.path}\`` +
+		(group.children.length > 0 ? " (subfolders with their own index not included)" : "") +
+		(symbolMode ? ` - ${plural(symbolCount, "symbol", "symbols")}` : "");
+	const users = symbolMode
+		? `${plural(consumerSymbols.size, "symbol", "symbols")} in ${plural(consumerFiles.size, "file", "files")}`
+		: plural(consumerFiles.size, "file", "files");
+	lines.push(
+		`> Usage index of the ${scope}. "used by" lines list the code outside this index that uses each ` +
+			`${symbolMode ? "symbol" : "file"} (${users} in all)` +
+			(ctx.sides.length > 0
+				? `, tests collapsed into one line; "uses shared" lines list the shared functions (code on no code side - ` +
+					`their own index lists every other user) it calls directly (${plural(sharedTargets.size, "function", "functions")})`
+				: ", tests collapsed into one line") +
+			`. ${symbolMode ? "Links are `[[file#name]]`; `#name#N` is the Nth same-named symbol in its file. " : ""}` +
+			`Regenerate after renames - never hand-edit.`,
+	);
+	lines.push("");
+	if (group.children.length > 0) {
+		const childLinks = [...group.children]
+			.sort((a, b) => a.folder.path.localeCompare(b.folder.path))
+			.map((c) => link(c.path.replace(/\.md$/, ""), localFolderAlias(c.folder, group.folder)));
+		lines.push(`Subfolders with their own index: ${childLinks.join(", ")}`);
+		lines.push("");
+	}
+	if (sharedItems.length > 0) {
+		lines.push("## Shared between sides");
+		lines.push("");
+		lines.push(
+			`_${plural(sharedItems.length, symbolMode ? "symbol" : "file", symbolMode ? "symbols" : "files")} here ` +
+				`${sharedItems.length === 1 ? "is" : "are"} linked into the code of more than one side (the \`Code sides\` setting): ` +
+				`changing one changes every side at once._`,
+		);
+		lines.push("");
+		lines.push(...sharedItems);
+		lines.push("");
+	}
+
+	const emitNested = (path: string, sym: SymbolInfo | null) => {
+		const k = keyOf(path, sym);
+		const share = shares.get(k);
+		if (share) lines.push(`\t- ${sharedLine(share, ctx.granularity)}`);
+		const inc = inByKey.get(k);
+		// The parent bullet already names the symbol (as `usageName` would: `reason#2`).
+		const own = sym ? `${sym.name}${sym.occurrence > 1 ? `#${sym.occurrence}` : ""}` : null;
+		if (inc) emitUsedBy(lines, inc, path, own, ctx);
+		const out = outByKey.get(k);
+		if (out) emitUsesShared(lines, out, ctx);
+	};
+	for (const ff of files) {
+		const alias = localAlias(ff.file, group.folder);
+		lines.push(`## ${alias}`);
+		lines.push("");
+		const fileNote = ff.symbols.length > 0 ? ` - ${plural(ff.symbols.length, "symbol", "symbols")}` : "";
+		lines.push(`- ${link(ff.file.path, alias)}${fileNote}`);
+		emitNested(ff.file.path, null);
+		if (symbolMode) {
+			for (const sym of ff.symbols) {
+				lines.push(`- ${link(`${ff.file.path}${subpathOf(sym)}`, `${sym.name}${sym.occurrence > 1 ? `#${sym.occurrence}` : ""}`)} - ${symbolDetail(sym, ff.file.extension)}`);
+				emitNested(ff.file.path, sym);
+			}
+		}
+		lines.push("");
+	}
+	return {
+		content: lines.join("\n"),
+		stats: {
+			consumerFiles: consumerFiles.size,
+			consumerSymbols: consumerSymbols.size,
+			symbolCount,
+			sharedUses: sharedTargets.size,
+		},
+	};
+}
+
+/** Folder alias relative to another folder (`region/src` under `region` → `src`). */
+function localFolderAlias(folder: TFolder, base: TFolder): string {
+	const prefix = base.path === "/" ? "" : `${base.path}/`;
+	return folder.path.startsWith(prefix) ? folder.path.slice(prefix.length) : folder.path;
+}
+
+// ---------- generation ----------
+
+/**
+ * Writes the usage indexes for `folder` (see the module doc): one for
+ * `folder` itself and one per eligible subfolder down to
+ * `settings.pointerSubfolderDepth` levels, each covering the code files no
+ * deeper index covers; folders without files of their own get none. Stale
+ * generated indexes under `folder` are trashed afterwards. Serialized by the
+ * caller via `runExclusive` — vault writes must not overlap.
+ */
+/** The vault-wide model and its usages — built once, shared by every index of one or more runs. */
+export interface PointerScan {
+	model: FlowchartModel;
+	usages: PointerUsage[];
+}
+
+/**
+ * Builds the vault-wide scan: users can live anywhere in the vault, and the
+ * reducer/accessor indexes need every rs file in scope to resolve.
+ */
+export async function scanVaultForPointers(plugin: CodeFilesPlugin, extensions?: string[]): Promise<PointerScan> {
+	const exts = [...new Set([...(extensions ?? plugin.settings.extensions), "tscn"])];
+	const model = await buildFlowchartModel(plugin, plugin.app.vault.getRoot(), exts);
+	return { model, usages: collectVaultUsages(model) };
+}
+
+/** Every generated index's header names the command it came from: `… > Symbol granularity" on server -->`. */
+const HEADER_SOURCE = /regenerate via "Generate pointers in subfolders > (File|Symbol) granularity" on (.+?) -->/;
+
+/**
+ * The (root folder, granularity) pairs the existing generated indexes were
+ * written from, read off their headers — what "Regenerate all pointer
+ * files" re-runs. Indexes from before the header named its root (the legacy
+ * `pointers.md`) are not discoverable.
+ */
+export async function discoverPointerRoots(plugin: CodeFilesPlugin): Promise<{ folder: TFolder; granularity: PointerGranularity }[]> {
+	const app = plugin.app;
+	const pattern = pointerFileNamePattern(plugin.settings.pointerFileName);
+	const found = new Map<string, { folder: TFolder; granularity: PointerGranularity }>();
+	for (const file of app.vault.getMarkdownFiles()) {
+		if (!pattern.test(file.name)) continue;
+		const m = HEADER_SOURCE.exec((await app.vault.cachedRead(file)).slice(0, 600));
+		if (!m) continue;
+		const path = m[2] === "the vault root" ? "/" : m[2];
+		const folder = path === "/" ? app.vault.getRoot() : app.vault.getAbstractFileByPath(path);
+		if (!(folder instanceof TFolder)) continue;
+		const granularity: PointerGranularity = m[1] === "Symbol" ? "symbol" : "file";
+		// One run per root; symbol granularity wins if both were used.
+		const prev = found.get(folder.path);
+		if (!prev || granularity === "symbol") found.set(folder.path, { folder, granularity });
+	}
+	// Outer roots first, so a root nested inside another (a scenes folder
+	// indexed at file granularity inside a symbol-granularity root) runs last
+	// and keeps its own granularity.
+	return [...found.values()].sort((a, b) => a.folder.path.localeCompare(b.folder.path));
+}
+
 export async function generatePointersInSubfolders(
 	plugin: CodeFilesPlugin,
 	folder: TFolder,
 	extensions?: string[],
 	granularity: PointerGranularity = "file",
+	scan?: PointerScan,
 ): Promise<PointerResult> {
 	const app = plugin.app;
-	const exts = [...new Set([...(extensions ?? plugin.settings.extensions), "tscn"])];
 	const includeGenerated = plugin.settings.includeGeneratedCodeFiles;
 	const ignoredFolders = parseIgnorePatterns(plugin.settings.ignoredFolders);
 	const depth = normalizePointerDepth(plugin.settings.pointerSubfolderDepth);
-	let targets = pointerTargetFolders(folder, includeGenerated, ignoredFolders, depth);
-	if (targets.length === 0) targets = [folder];
-	// One vault-wide model: consumers can live anywhere in the vault, and the
-	// reducer/accessor indexes need every rs file in scope to resolve.
-	const model = await buildFlowchartModel(plugin, app.vault.getRoot(), exts);
-	const symbolsByPath = new Map(model.files.map((ff) => [ff.file.path, ff.symbols]));
-	const filename = POINTER_FILENAME;
-	const isPointerFile = (f: TFile): boolean =>
-		f.name === POINTER_FILENAME || f.name === LEGACY_POINTER_SYMBOLS_FILENAME;
-	const result: PointerResult = { targets: [], written: [], empty: [] };
-	for (const target of targets) {
-		const files = collectCodeFiles(target, exts, includeGenerated, ignoredFolders).filter((f) => !isPointerFile(f));
-		const usages = collectPointerUsage(model, target);
-		const content =
-			granularity === "symbol"
-				? pointerSymbolsMarkdown(target, files, usages, symbolsByPath, folder)
-				: pointerMarkdown(target, files, indexPointerUsage(usages), folder);
-		const pointerPath = normalizePath(
-			target.path === "/" ? filename : `${target.path}/${filename}`,
+	const template = normalizePointerFileName(plugin.settings.pointerFileName);
+	const vaultName = app.vault.getName();
+	const sides = parseCodeSides(plugin.settings.codeSides);
+	const ctx: RenderContext = { commandFolder: folder, sides, granularity };
+
+	const { model, usages } = scan ?? (await scanVaultForPointers(plugin, extensions));
+
+	// Groups: the command folder plus every eligible subfolder; each code file
+	// belongs to its deepest group folder.
+	const groupFolders = [folder, ...pointerTargetFolders(folder, includeGenerated, ignoredFolders, depth)];
+	const groups = new Map<string, PointerGroup>();
+	for (const f of groupFolders) {
+		groups.set(f.path, { folder: f, files: [], children: [], path: "" });
+	}
+	const groupOfFolder = (dir: TFolder | null): PointerGroup | null => {
+		for (let d = dir; d; d = d.parent) {
+			const g = groups.get(d.path);
+			if (g) return g;
+			if (d.path === folder.path) break;
+		}
+		return null;
+	};
+	const groupByFile = new Map<string, PointerGroup>();
+	for (const ff of model.files) {
+		if (ff.file.extension === "md") continue; // a pointer file is never code
+		const g = groupOfFolder(ff.file.parent);
+		if (!g) continue;
+		g.files.push(ff);
+		groupByFile.set(ff.file.path, g);
+	}
+	const live = [...groups.values()].filter((g) => g.files.length > 0);
+	for (const g of live) {
+		g.path = normalizePath(
+			`${g.folder.path === "/" ? "" : `${g.folder.path}/`}${pointerFileNameFor(g.folder, template, vaultName)}`,
 		);
-		const existing = app.vault.getAbstractFileByPath(pointerPath);
+	}
+	// Each index links its nearest written descendants (from the nearest
+	// ancestor index that is written).
+	for (const g of live) {
+		if (g.folder.path === folder.path) continue;
+		let p = groupOfFolder(g.folder.parent);
+		while (p && p.files.length === 0) p = p.folder.path === folder.path ? null : groupOfFolder(p.folder.parent);
+		if (p) p.children.push(g);
+	}
+
+	const result: PointerResult = { targets: [], written: [], empty: [], removed: [] };
+	const isShared = (path: string) => sides.length > 0 && sideOf(path, sides) === null;
+	for (const g of live.sort((a, b) => a.folder.path.localeCompare(b.folder.path))) {
+		const isInside = (path: string) => groupByFile.get(path) === g;
+		const incoming = usagesInto(usages, isInside);
+		const outgoing =
+			sides.length > 0
+				? usagesOutOf(
+						usages,
+						isInside,
+						// Shared *functions* only (a shared type such as `WorldPos`
+						// appears in nearly every signature and says nothing about
+						// shared logic), from non-test code on a side.
+						(u) =>
+							CODE_LEVEL_VERBS.has(u.verb) &&
+							u.targetSym?.kind === "function" &&
+							isShared(u.target.path) &&
+							sideOf(u.consumer.path, sides) !== null &&
+							!isTestCode(u.consumer.path, u.consumerSym),
+					)
+				: [];
+		const { content, stats } = renderGroup(g, incoming, outgoing, ctx, vaultName);
+		const existing = app.vault.getAbstractFileByPath(g.path);
 		if (existing instanceof TFile) {
-			await app.vault.modify(existing, content);
+			if ((await app.vault.read(existing)) !== content) await app.vault.modify(existing, content);
 		} else if (!existing) {
-			await app.vault.create(pointerPath, content);
+			await app.vault.create(g.path, content);
 		} else {
 			continue;
 		}
-		const consumerFiles = new Set(usages.map((u) => u.consumer.path));
-		const consumerSyms = new Set(usages.map((u) => `${u.consumer.path}|${symbolIdentity(u.consumerSym)}`));
 		const entry: PointerTargetResult = {
-			folder: target.path,
-			pointer: pointerPath,
+			folder: g.folder.path,
+			pointer: g.path,
 			granularity,
-			fileCount: files.length,
-			consumerCount: consumerFiles.size,
+			fileCount: g.files.length,
+			consumerCount: stats.consumerFiles,
+			sharedUseCount: stats.sharedUses,
 		};
 		if (granularity === "symbol") {
-			entry.symbolCount = files.reduce((a, f) => a + (symbolsByPath.get(f.path)?.length ?? 0), 0);
-			entry.consumerSymbolCount = consumerSyms.size;
+			entry.symbolCount = stats.symbolCount;
+			entry.consumerSymbolCount = stats.consumerSymbols;
 		}
 		result.targets.push(entry);
-		result.written.push(pointerPath);
-		if (files.length === 0) result.empty.push(pointerPath);
+		result.written.push(g.path);
 	}
+
+	result.removed = await removeStalePointerFiles(plugin, folder, new Set(result.written.map((p) => p.toLowerCase())), template);
 	return result;
+}
+
+/**
+ * Trashes generated indexes under `folder` this run did not write: files
+ * named like an index (the current template, `pointers.md`,
+ * `pointers-symbols.md`) whose first lines carry `POINTER_MARKER_PREFIX`.
+ * Ignored/output/dot folders are not searched. Vault trash, or the system
+ * trash when `pruneToSystemTrash` is on.
+ */
+async function removeStalePointerFiles(
+	plugin: CodeFilesPlugin,
+	folder: TFolder,
+	written: Set<string>,
+	template: string,
+): Promise<string[]> {
+	const app = plugin.app;
+	const includeGenerated = plugin.settings.includeGeneratedCodeFiles;
+	const ignoredFolders = parseIgnorePatterns(plugin.settings.ignoredFolders);
+	const pattern = pointerFileNamePattern(template);
+	const candidates: TFile[] = [];
+	const walk = (dir: TFolder) => {
+		for (const child of dir.children) {
+			if (child instanceof TFolder) {
+				if (isPointerTargetFolder(child, includeGenerated, ignoredFolders)) walk(child);
+			} else if (child instanceof TFile && child.extension === "md" && !written.has(child.path.toLowerCase())) {
+				if (child.name === LEGACY_POINTER_FILENAME || child.name === LEGACY_POINTER_SYMBOLS_FILENAME || pattern.test(child.name)) {
+					candidates.push(child);
+				}
+			}
+		}
+	};
+	walk(folder);
+	const removed: string[] = [];
+	for (const file of candidates) {
+		const head = (await app.vault.cachedRead(file)).slice(0, 600);
+		if (!head.includes(POINTER_MARKER_PREFIX)) continue;
+		await app.vault.trash(file, plugin.settings.pruneToSystemTrash);
+		removed.push(file.path);
+	}
+	return removed;
 }
